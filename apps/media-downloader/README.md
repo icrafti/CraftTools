@@ -30,7 +30,7 @@ metadata lookup times out if no peers are found within four minutes.
 
 ## Portable use
 
-Download the complete portable ZIP from [Releases](https://github.com/icrafti/software-collection/releases)
+Download the complete portable ZIP from [Releases](https://github.com/icrafti/CraftTools/releases)
 and open `MediaDownloader.exe`. Python, yt-dlp, libtorrent, FFmpeg, and ffprobe
 are bundled. Node.js/Deno is optional for general use and is not bundled.
 
@@ -58,4 +58,4 @@ The collection's English version is **1.1**, based on
 the upstream version is preserved in [licenses](../../licenses/Media-Downloader-Historical-MIT.txt)
 and is not revoked. Dependencies keep their own licenses.
 
-**Software by icrafti — https://github.com/icrafti/software-collection**
+**Software by icrafti — https://github.com/icrafti/CraftTools**

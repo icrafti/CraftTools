@@ -1,4 +1,4 @@
-# Software Collection 1.1.0
+# CraftTools 1.1.0
 
 Two portable Windows applications by icrafti, with English interfaces and
 documentation:
@@ -13,7 +13,7 @@ folder, and open the EXE. Windows 10/11 x64 is required. Audio Converter uses th
 standard .NET Framework 4.x; neither EXE requires a Python installation.
 Media Downloader may need Node.js or Deno for some websites.
 
-**Software by icrafti — https://github.com/icrafti/software-collection**
+**Software by icrafti — https://github.com/icrafti/CraftTools**
 
 Retain attribution when using or redistributing original collection code.
 Public uses and publications of processed/downloaded files must carry the

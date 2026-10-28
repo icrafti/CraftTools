@@ -1,12 +1,12 @@
 # Attribution
 
 Author: **[icrafti](https://github.com/icrafti)**  
-Project: **https://github.com/icrafti/software-collection**
+Project: **https://github.com/icrafti/CraftTools**
 
 Required credit:
 
 ```text
-Software by icrafti — https://github.com/icrafti/software-collection
+Software by icrafti — https://github.com/icrafti/CraftTools
 ```
 
 For private use, retain the supplied credit in the application or accompanying
@@ -19,7 +19,7 @@ Identify modifications and do not imply endorsement by icrafti.
 For public use, services, tutorials, or publication of processed/downloaded
 files, put the credit in the description, documentation, or credits. For
 example, a video description can say: “Audio converted with Audio Converter
-by icrafti — https://github.com/icrafti/software-collection”.
+by icrafti — https://github.com/icrafti/CraftTools”.
 
 The credit identifies the tool author, not the copyright holder of any media.
 No embedded watermark or audible announcement is required. See [LICENSE](LICENSE)

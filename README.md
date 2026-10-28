@@ -1,6 +1,6 @@
-<p align="center"><img src="docs/assets/collection-banner.svg" alt="Software Collection by icrafti — Media Downloader and Audio Converter" width="900"></p>
+<p align="center"><img src="docs/assets/collection-banner.svg" alt="CraftTools by icrafti — Media Downloader and Audio Converter" width="900"></p>
 
-# Software Collection
+# CraftTools
 
 Practical Windows desktop tools by **[icrafti](https://github.com/icrafti)**.
 Download media, convert audio, and keep your everyday workflow simple.
@@ -13,12 +13,12 @@ Download media, convert audio, and keep your everyday workflow simple.
 
 | Tool | What it does | Get started |
 | --- | --- | --- |
-| **[Media Downloader](apps/media-downloader/README.md)** | Download video or audio from websites supported by yt-dlp; download torrents from magnet links and `.torrent` files. | [Guide](apps/media-downloader/README.md) · [Windows downloads](https://github.com/icrafti/software-collection/releases) |
-| **[Audio Converter](apps/audio-converter/README.md)** | Convert local audio to MP3, WAV, FLAC, M4A/AAC, or OGG/Vorbis. Choose quality, track progress, and cancel safely. | [Guide](apps/audio-converter/README.md) · [Windows downloads](https://github.com/icrafti/software-collection/releases) |
+| **[Media Downloader](apps/media-downloader/README.md)** | Download video or audio from websites supported by yt-dlp; download torrents from magnet links and `.torrent` files. | [Guide](apps/media-downloader/README.md) · [Windows downloads](https://github.com/icrafti/CraftTools/releases) |
+| **[Audio Converter](apps/audio-converter/README.md)** | Convert local audio to MP3, WAV, FLAC, M4A/AAC, or OGG/Vorbis. Choose quality, track progress, and cancel safely. | [Guide](apps/audio-converter/README.md) · [Windows downloads](https://github.com/icrafti/CraftTools/releases) |
 
 ## Portable Windows applications
 
-1. Open **[Releases](https://github.com/icrafti/software-collection/releases)** and download the tool you need.
+1. Open **[Releases](https://github.com/icrafti/CraftTools/releases)** and download the tool you need.
 2. Keep the executable with the supplied `LICENSE`, `ATTRIBUTION.md`, and third-party notices, or download its complete portable ZIP.
 3. Double-click the executable. No application installer or Python installation is needed.
 
@@ -34,7 +34,7 @@ modify, or redistribute them. Public uses and publications of processed or
 downloaded files must include the credit in an accompanying description,
 documentation, or credits:
 
-> Software by icrafti — https://github.com/icrafti/software-collection
+> Software by icrafti — https://github.com/icrafti/CraftTools
 
 Private use does not require announcing private activity: keeping the built-in
 credit and documentation is sufficient. See [Attribution](ATTRIBUTION.md) for
@@ -61,7 +61,7 @@ from this repository.
 
 ## Feedback
 
-Use [Issues](https://github.com/icrafti/software-collection/issues) for bugs and
+Use [Issues](https://github.com/icrafti/CraftTools/issues) for bugs and
 suggestions. Include the application version, Windows version, and reproduction
 steps. Remove personal data, account cookies, and private URLs from reports.
 

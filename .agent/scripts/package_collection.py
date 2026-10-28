@@ -1,4 +1,4 @@
-"""Create deterministic source and portable ZIPs for Software Collection."""
+"""Create deterministic source and portable ZIPs for CraftTools."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -88,12 +88,12 @@ def package(root, output, version, dry_run=False, force=False):
     if dry_run:
         return report
     output.mkdir(parents=True, exist_ok=True)
-    artifacts = [write_zip(output / ('SoftwareCollection-source-' + version + '.zip'), files, force)]
+    artifacts = [write_zip(output / ('CraftTools-source-' + version + '.zip'), files, force)]
     notices = [(path.relative_to(root).as_posix(), path) for path in (root / 'licenses').rglob('*') if path.is_file()]
     notices += [(name, root / name) for name in ['LICENSE', 'ATTRIBUTION.md', 'THIRD_PARTY_NOTICES.md']]
     for name, description in [('AudioConverter', 'Convert local audio to MP3, WAV, FLAC, M4A, and OGG. Works offline.'),
                               ('MediaDownloader', 'Download media and torrents. Internet is required; Node.js/Deno may be needed for some sites.')]:
-        readme = f'{name} {version}\n\nDouble-click {name}.exe on Windows 10/11 x64.\n{description}\n\nSoftware by icrafti\nhttps://github.com/icrafti/software-collection\n\nRetain the author credit and read LICENSE and THIRD_PARTY_NOTICES.md.\nFull source and instructions: https://github.com/icrafti/software-collection\n'
+        readme = f'{name} {version}\n\nDouble-click {name}.exe on Windows 10/11 x64.\n{description}\n\nSoftware by icrafti\nhttps://github.com/icrafti/CraftTools\n\nRetain the author credit and read LICENSE and THIRD_PARTY_NOTICES.md.\nFull source and instructions: https://github.com/icrafti/CraftTools\n'
         entries = notices + [(name + '.exe', root / 'dist' / (name + '.exe')), ('README.txt', readme)]
         artifacts.append(write_zip(output / (name + '-' + version + '-windows-x64.zip'), entries, force))
     sums = []

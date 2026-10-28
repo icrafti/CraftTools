@@ -7,7 +7,7 @@ One window, five output formats, and no internet connection needed.
 
 ## Use
 
-1. Download `AudioConverter.exe` or its portable ZIP from [Releases](https://github.com/icrafti/software-collection/releases).
+1. Download `AudioConverter.exe` or its portable ZIP from [Releases](https://github.com/icrafti/CraftTools/releases).
 2. Open the application and choose or drop an audio file.
 3. Choose an output folder, format, and quality, then click **Convert**.
 4. When conversion finishes, click **Open folder**.
@@ -44,4 +44,4 @@ The English collection version is **1.1**. Original application code uses the
 [Icrafti Attribution License 1.0](../../LICENSE); the separate FFmpeg engine
 retains GPL v3+ and its own copyright notices.
 
-**Software by icrafti — https://github.com/icrafti/software-collection**
+**Software by icrafti — https://github.com/icrafti/CraftTools**

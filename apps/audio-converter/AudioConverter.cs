@@ -274,7 +274,7 @@ namespace PortableAudioConverter
             }); open.Width = 155; open.Enabled = false; layout.Controls.Add(open, 0, 11);
             var about = new LinkLabel { Text = "About / icrafti", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight };
             about.LinkClicked += delegate { MessageBox.Show(this,
-                "Audio Converter 1.1\r\nSoftware by icrafti\r\nhttps://github.com/icrafti/software-collection\r\n\r\nPortable for Windows 10/11 x64, .NET Framework 4.x.\r\nApplication: Icrafti Attribution License 1.0. Retain author credit.\r\nFFmpeg 8.1 (Gyan full build) is a separate engine under GPL v3+.\r\nEngine source: https://www.gyan.dev/ffmpeg/builds/\r\nhttps://ffmpeg.org/\r\nNo internet connection is needed to convert audio.", "About / icrafti", MessageBoxButtons.OK, MessageBoxIcon.Information); };
+                "Audio Converter 1.1\r\nSoftware by icrafti\r\nhttps://github.com/icrafti/CraftTools\r\n\r\nPortable for Windows 10/11 x64, .NET Framework 4.x.\r\nApplication: Icrafti Attribution License 1.0. Retain author credit.\r\nFFmpeg 8.1 (Gyan full build) is a separate engine under GPL v3+.\r\nEngine source: https://www.gyan.dev/ffmpeg/builds/\r\nhttps://ffmpeg.org/\r\nNo internet connection is needed to convert audio.", "About / icrafti", MessageBoxButtons.OK, MessageBoxIcon.Information); };
             layout.Controls.Add(about, 1, 11);
             AcceptButton = convert;
             format.SelectedIndexChanged += delegate { RefreshQuality(); };

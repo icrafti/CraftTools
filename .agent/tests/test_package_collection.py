@@ -42,7 +42,7 @@ class PackageTests(unittest.TestCase):
             second = MODULE.package(self.root, self.output, '1.1.0')
         self.assertTrue(all(item['unchanged'] for item in second['artifacts']))
         self.assertFalse(any(item['unchanged'] for item in first['artifacts']))
-        with zipfile.ZipFile(self.output / 'SoftwareCollection-source-1.1.0.zip') as archive:
+        with zipfile.ZipFile(self.output / 'CraftTools-source-1.1.0.zip') as archive:
             self.assertTrue(all('private' not in archive.read(name).decode(errors='replace') for name in archive.namelist()))
             self.assertNotIn('dist/AudioConverter.exe', archive.namelist())
         with zipfile.ZipFile(self.output / 'AudioConverter-1.1.0-windows-x64.zip') as archive:

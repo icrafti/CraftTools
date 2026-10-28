@@ -240,7 +240,7 @@ class DownloaderApp:
         notebook = ttk.Notebook(root, style="TNotebook")
         notebook.pack(fill="both", expand=True, padx=14, pady=(10, 14))
         self.notebook = notebook
-        ttk.Label(root, text="Software by icrafti - github.com/icrafti/software-collection",
+        ttk.Label(root, text="Software by icrafti - github.com/icrafti/CraftTools",
                   style="Hint.TLabel").pack(side="bottom", pady=(0, 10))
         self.media_tab = ttk.Frame(notebook, style="TFrame", padding=(14, 12))
         self.torrent_tab = ttk.Frame(notebook, style="TFrame", padding=(14, 12))

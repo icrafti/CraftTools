@@ -1,6 +1,6 @@
 # Current facts
 
-- Owner: icrafti. Target repository: software-collection.
+- Owner: icrafti. Repository: CraftTools.
 - Applications: Media Downloader 1.1 and Audio Converter 1.1, Windows x64.
 - Current original-code license: LicenseRef-Icrafti-Attribution-1.0.
 - Dependency and historical licenses remain independent; see THIRD_PARTY_NOTICES.md.

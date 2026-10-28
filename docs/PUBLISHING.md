@@ -14,7 +14,7 @@ gh auth status
    committed, then create the public repository and push the source:
 
 ```powershell
-gh repo create icrafti/software-collection --public --source . --remote origin --push --description "Portable Windows tools by icrafti: Media Downloader and Audio Converter. Attribution required."
+gh repo create icrafti/CraftTools --public --source . --remote origin --push --description "Portable Windows tools by icrafti: Media Downloader and Audio Converter. Attribution required."
 ```
 
 3. Prepare the portable and source ZIPs:
@@ -28,7 +28,7 @@ python -B .agent/scripts/package_collection.py --source . --output-directory dis
    artifacts using the prepared English release notes:
 
 ```powershell
-gh release create v1.1.0 dist/AudioConverter.exe dist/MediaDownloader.exe dist/AudioConverter-1.1.0-windows-x64.zip dist/MediaDownloader-1.1.0-windows-x64.zip dist/SoftwareCollection-source-1.1.0.zip dist/SHA256SUMS.txt --repo icrafti/software-collection --title "Software Collection 1.1.0" --notes-file docs/RELEASE_NOTES.md
+gh release create v1.1.0 dist/AudioConverter.exe dist/MediaDownloader.exe dist/AudioConverter-1.1.0-windows-x64.zip dist/MediaDownloader-1.1.0-windows-x64.zip dist/CraftTools-source-1.1.0.zip dist/SHA256SUMS.txt --repo icrafti/CraftTools --title "CraftTools 1.1.0" --notes-file docs/RELEASE_NOTES.md
 ```
 
 Do not rerun repository or release creation blindly. First check whether the
