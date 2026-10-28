@@ -1,0 +1,4 @@
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9
+yt-dlp==2026.10.26
+libtorrent==2.1.1

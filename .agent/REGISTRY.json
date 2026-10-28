@@ -1,0 +1,49 @@
+{
+  "tools": [
+    {
+      "name": "build_audio_converter",
+      "path": ".agent/scripts/build_audio_converter.py",
+      "description": "Build a portable Windows x64 Audio Converter executable containing a compressed FFmpeg engine.",
+      "usage_example": "python -B .agent/scripts/build_audio_converter.py --source apps/audio-converter/AudioConverter.cs --ffmpeg bin/ffmpeg.exe --output dist/AudioConverter.exe --dry-run",
+      "input_schema": {
+        "--source": "required: C# source path",
+        "--ffmpeg": "required: static Windows x64 FFmpeg executable",
+        "--output": "required: destination .exe path",
+        "--compiler": "optional: .NET Framework csc.exe path",
+        "--dry-run": "validate inputs without writing files",
+        "--force": "explicitly replace an existing executable with changed inputs"
+      },
+      "tests": ".agent/tests/test_build_audio_converter.py"
+    },
+    {
+      "name": "build_media_downloader",
+      "path": ".agent/scripts/build_media_downloader.py",
+      "description": "Build portable Media Downloader; verify bundled Tcl/Tk, stage output atomically, and skip unchanged inputs.",
+      "usage_example": "python -B .agent/scripts/build_media_downloader.py --source apps/media-downloader/yt_downloader.py --python .venv/Scripts/python.exe --ffmpeg bin/ffmpeg.exe --ffprobe bin/ffprobe.exe --output dist/MediaDownloader.exe --dry-run",
+      "input_schema": {
+        "--source": "Python entrypoint",
+        "--python": "isolated environment Python",
+        "--ffmpeg": "static ffmpeg.exe",
+        "--ffprobe": "static ffprobe.exe",
+        "--output": "destination MediaDownloader.exe",
+        "--dry-run": "validate only",
+        "--force": "replace generated executable"
+      },
+      "tests": ".agent/tests/test_build_media_downloader.py"
+    },
+    {
+      "name": "package_collection",
+      "path": ".agent/scripts/package_collection.py",
+      "description": "Create stable source and portable ZIPs plus SHA256 checksums; exclude runtime settings, cookies, logs, and media.",
+      "usage_example": "python -B .agent/scripts/package_collection.py --source outputs/software-collection --output-directory outputs/software-collection/dist --version 1.1.0 --dry-run",
+      "input_schema": {
+        "--source": "collection root",
+        "--output-directory": "release archive directory",
+        "--version": "numeric release version",
+        "--dry-run": "validate only",
+        "--force": "replace changed generated archives"
+      },
+      "tests": ".agent/tests/test_package_collection.py"
+    }
+  ]
+}

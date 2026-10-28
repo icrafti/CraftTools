@@ -1,0 +1,68 @@
+Icrafti Attribution License 1.0
+Copyright (c) 2026 icrafti
+
+1. Scope
+This license applies to original software, translations, documentation, and
+artwork in this collection for which icrafti is the copyright holder and which
+are identified as licensed under LicenseRef-Icrafti-Attribution-1.0 (the
+"Software"). It does not replace licenses of third-party components, historical
+releases, or material specifically identified as having a different license.
+
+2. Permission
+Subject to the attribution requirements below, permission is granted, free of
+charge, to use the Software for any lawful purpose, including personal,
+educational, and commercial purposes, and to copy, modify, merge, publish,
+distribute, and sell copies of the Software. These permissions are conditional
+on compliance with this license. No permission is granted to remove attribution
+or to falsely claim authorship of the Software.
+
+3. Attribution required for every use
+Every use, copy, modification, distribution, or public presentation of the
+Software must retain the following credit, or an equivalent credit containing
+the same author name and project link:
+
+    Software by icrafti
+    https://github.com/icrafti/software-collection
+
+a. Private use: retain the credit in the application's interface or readily
+   accessible accompanying documentation. Keeping the supplied author credit
+   satisfies this requirement; no public announcement of private activity is
+   required.
+b. Modified software: retain the credit in an About/Help screen or another
+   readily accessible location, and in the accompanying documentation. Clearly
+   identify your modifications and do not imply endorsement by icrafti.
+c. Redistribution: include this license and the credit with every copy or
+   substantial portion of the Software, including source and executable copies.
+d. Public use: include the credit in associated documentation, a description,
+   credits, or another reasonably visible location when presenting or providing
+   a service using the Software, or when publicly distributing or publishing
+   files processed or downloaded using the Software. A single credit in the
+   accompanying description or credits of a release, publication, or service is
+   sufficient; no audible announcement or embedded media watermark is required.
+   A clickable link is required where the medium supports links.
+
+4. Third-party rights and prior releases
+This license grants no rights in downloaded or processed media. You remain
+responsible for obtaining permission to use that material. The credit identifies
+the software author, not the author or owner of the media.
+Third-party components remain available under their own licenses. Nothing in
+this license limits rights independently granted by those licenses, including
+rights in FFmpeg, Python, yt-dlp, libtorrent, PyInstaller, or historical MIT/GPL
+releases. Existing permissions for earlier releases are not revoked.
+This is a custom attribution license, not the MIT license or the GNU GPL, and
+the collection is not represented as OSI-approved open-source software.
+
+5. No warranty; limitation of liability
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE, AND NONINFRINGEMENT. TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW,
+THE AUTHORS AND COPYRIGHT HOLDERS SHALL NOT BE LIABLE FOR ANY CLAIM, DAMAGES,
+OR OTHER LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR
+ITS USE. No trademark rights or endorsement are granted.
+
+6. Termination and correction
+The permissions granted by this license terminate automatically upon material
+noncompliance. They are reinstated when the violation is fully corrected within
+30 days of discovering it, unless the copyright holder has expressly terminated
+them for repeated violations. This does not affect rights independently granted
+under other licenses.

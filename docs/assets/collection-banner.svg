@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 290" role="img" aria-label="Software Collection by icrafti">
+<rect width="1000" height="290" fill="#edf3fb"/>
+<rect x="0" width="12" height="290" fill="#245db8"/>
+<g font-family="Segoe UI,Arial,sans-serif" fill="#182b44">
+<text x="46" y="84" font-size="43" font-weight="700">Software Collection</text>
+<text x="48" y="124" font-size="21" fill="#58677b">Practical desktop tools by icrafti</text>
+<rect x="47" y="170" width="261" height="66" rx="6" fill="#fff"/>
+<rect x="327" y="170" width="261" height="66" rx="6" fill="#fff"/>
+<text x="69" y="211" font-size="23">Media Downloader</text>
+<text x="351" y="211" font-size="23">Audio Converter</text>
+</g>
+<g fill="none" stroke="#245db8" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+<path d="M736 54v64m-25-24 25 25 25-25m-57 40h64"/>
+<path d="M676 211h22l11-24 15 50 18-73 20 89 18-65 15 34 12-11h41"/>
+</g>
+<text x="685" y="279" font-family="Segoe UI,Arial,sans-serif" font-size="14" fill="#58677b">Windows 10/11 x64</text>
+</svg>
