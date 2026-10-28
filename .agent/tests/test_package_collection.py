@@ -57,6 +57,20 @@ class PackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '--force'):
                 MODULE.package(self.root, self.output, '1.1.0')
 
+    def test_publish_stages_under_destination_parent(self):
+        output = self.output / 'fixture.zip'
+        self.output.mkdir()
+        observed = []
+        original = Path.replace
+        def replace(source, target):
+            observed.append((source, Path(target)))
+            return original(source, target)
+        with mock.patch.object(Path, 'replace', replace):
+            MODULE.write_zip(output, [('README.txt', 'test')], force=False)
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0][0].parent, output.parent)
+        self.assertEqual(list(self.output.glob('*.building')), [])
+
 
 if __name__ == '__main__':
     unittest.main()

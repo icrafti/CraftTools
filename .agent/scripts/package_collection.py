@@ -58,11 +58,19 @@ def write_zip(path, entries, force):
             if archive.testzip() is not None:
                 raise ValueError('ZIP integrity check failed')
         digest = sha256(staged)
-        if path.exists() and sha256(path) == digest:
+        if path.exists() and sha256(path) == digest and not force:
             return {'name': path.name, 'sha256': digest, 'unchanged': True}
         if path.exists() and not force:
             raise ValueError('Archive already exists with different content; use --force: ' + str(path))
-        staged.replace(path)
+        # A Windows TemporaryDirectory is private to the creating account.
+        # Create the publication file under its destination parent so it inherits
+        # that parent's normal ACL instead of the sandbox account's private ACL.
+        published = path.with_name(path.name + '.building')
+        try:
+            shutil.copyfile(staged, published)
+            published.replace(path)
+        finally:
+            published.unlink(missing_ok=True)
         return {'name': path.name, 'sha256': digest, 'unchanged': False}
 
 

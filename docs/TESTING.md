@@ -8,11 +8,11 @@ Collection version: **1.1.0**. Validation date: **2026-10-28**.
 | --- | --- |
 | Audio Converter build tool: safe overwrite, compilation failure, dry-run, and idempotence | 6 tests passed |
 | Media Downloader build tool: staging, idempotence, dependency validation, and rejection of missing GUI resources | 6 tests passed |
-| Release packager: stable archives, dry-run, required files, private-file exclusion, and safe overwrite | 4 tests passed |
+| Release packager: stable archives, dry-run, required files, private-file exclusion, safe overwrite, and destination staging | 5 tests passed |
 | Packaged Audio Converter: five formats, decoding, Unicode/spaced paths, empty PATH, cancellation, errors, and no overwrite | 3 tests passed |
 | Media Downloader: English UI/credit, settings, format options, local HTTP download and MP3 conversion, and Tcl initialization without site startup hooks | 5 tests passed |
 
-The 24 unittest cases include subchecks for all five Audio Converter output
+The 25 unittest cases include subchecks for all five Audio Converter output
 formats. Media Downloader's download fixture is generated locally and served on
 `127.0.0.1`; no public website, torrent swarm, or browser cookie is accessed.
 
