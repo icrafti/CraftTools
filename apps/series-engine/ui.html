@@ -1,0 +1,2856 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Сборка видео</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #e9eef4;
+      --panel: #fdfdff;
+      --ink: #1b263b;
+      --quiet: #4a5970;
+      --line: #c7d1df;
+      --teal: #22488c;
+      --dark: #192941;
+      --error: #a12c33;
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); line-height: 1.5; }
+    [hidden] { display: none !important; }
+    .shell { width: min(1240px, calc(100% - 48px)); margin: 0 auto; }
+    .top { background: var(--dark); color: white; border-bottom: 4px solid #eec078; }
+    .top .shell { min-height: 108px; display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding-block: 16px; }
+    .mark { flex: none; width: 44px; height: 44px; color: #f4c786; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: clamp(1.6rem, 4vw, 2.2rem); line-height: 1.1; font-weight: 680; }
+    .top p { margin-top: 4px; color: #d4e0f0; }
+    #engine-health { font-size: .84rem; }
+    .top nav { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+    .top nav a { display: inline-flex; align-items: center; min-height: 38px; padding: 4px 10px; color: #fff; border: 1px solid #8295ae; border-radius: 5px; text-decoration: none; }
+    .top nav a:hover { background: #2c415e; }
+    main.shell { padding: 28px 0 36px; }
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.28fr) minmax(0, 1fr); align-items: start; gap: 22px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .monitor { position: sticky; top: 18px; max-height: calc(100dvh - 36px); overflow: auto; }
+    .step, .monitor-heading, .results { padding: 21px 24px; }
+    .step + .step, .results { border-top: 1px solid var(--line); }
+    .heading { display: flex; align-items: baseline; gap: 11px; margin-bottom: 12px; }
+    .step-no { color: var(--teal); font-size: .9rem; font-weight: 720; font-variant-numeric: tabular-nums; }
+    h2 { font-size: 1.2rem; font-weight: 690; }
+    .small { font-size: .89rem; color: var(--quiet); }
+    .project-field { display: block; margin: 12px 0 5px; font-weight: 620; }
+    .line { display: flex; gap: 8px; }
+    .line input { flex: 1 1 0; min-width: 0; }
+    input[type=text], select, button { font: inherit; min-height: 42px; border-radius: 6px; }
+    input[type=text], select { background: white; border: 1px solid #91a9b3; color: var(--ink); padding: 7px 10px; }
+    select { width: 100%; }
+    button {
+      background: transparent; color: var(--ink); border: 1px solid #91a9b3;
+      padding: 8px 13px; font-weight: 640; cursor: pointer;
+    }
+    button:hover:enabled { background: #e3edf0; }
+    button.primary { background: var(--teal); color: white; border-color: var(--teal); }
+    button.primary:hover:enabled { background: #18376e; }
+    button:disabled { opacity: .58; cursor: default; }
+    :focus-visible { outline: 3px solid #007c9e; outline-offset: 2px; }
+    fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+    legend { padding: 0; margin-bottom: 8px; font-weight: 650; }
+    .choice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .choice {
+      display: flex; align-items: flex-start; gap: 8px; min-width: 0; padding: 9px 10px;
+      background: white; border: 1px solid var(--line); border-radius: 7px; cursor: pointer;
+    }
+    .choice:has(input:checked) { background: #e6edf9; border-color: #5c79aa; }
+    .choice strong { display: block; font-size: .93rem; }
+    .choice small { display: block; color: var(--quiet); }
+    input[type=checkbox], input[type=radio] { margin: .32em 0 0; accent-color: var(--teal); }
+    .language-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 6px; }
+    .language-list .choice:has(input:disabled) { cursor: default; color: var(--quiet); }
+    .language-header { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: 6px; margin: 14px 0 7px; }
+    .language-header button { min-height: auto; font-size: .84rem; padding: 3px 7px; }
+    .hint { margin-top: 8px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
+    .feedback { margin-top: 8px; overflow-wrap: anywhere; }
+    .error { color: var(--error); }
+    .monitor-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .status { display: flex; align-items: center; gap: 7px; color: var(--quiet); font-size: .88rem; }
+    .status::before { content: ""; width: 9px; height: 9px; flex: none; border-radius: 50%; background: #879da6; }
+    .status[data-state=running]::before { background: #a26005; }
+    .status[data-state=succeeded]::before { background: var(--teal); }
+    .status[data-state=failed]::before { background: var(--error); }
+    pre {
+      margin: 0; min-height: 138px; max-height: 330px; overflow: auto; padding: 15px 24px;
+      background: var(--dark); color: #e0edf0; font: .82rem/1.6 Consolas, monospace;
+      white-space: pre-wrap; overflow-wrap: anywhere;
+    }
+    .result-list { padding: 0; margin: 10px 0 0; list-style: none; }
+    .result-list li { padding: 10px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+    .result-list a { color: #005b76; font-weight: 660; }
+    .result-list code { display: block; font-size: .8rem; margin-top: 3px; }
+    .result-list button { min-height: auto; margin-top: 5px; padding: 4px 8px; font-size: .83rem; }
+    details { margin-top: 12px; }
+    summary { cursor: pointer; font-weight: 630; }
+    details p, details button { margin-top: 8px; }
+    .step label:not(.choice):not(:has(input[type=checkbox])) { display: block; }
+    .step details input:not([type=checkbox]):not([type=radio]):not([type=range]), .step textarea { max-width: 100%; }
+    .step details label:not(:has(input)) { margin-top: 8px; }
+    .project-tools > details, .tool-group { border-top: 1px solid var(--line); padding-top: 9px; }
+    .monitor > details, #queue-selected, #job-retry, #job-retry-message { margin-inline: 24px; }
+    #job-retry { margin-bottom: 10px; }
+    #queue-jobs:empty, #queue-selected:empty { display: none; }
+    #region-canvas { position: relative; cursor: crosshair; touch-action: none; }
+    #region-image, #region-preview-image { display: block; width: 100%; }
+    #region-boxes { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+    .region-box { position: absolute; border: 1px dashed white; box-shadow: 0 0 0 1px #17262f; }
+    .region-box.selected { border: 2px solid #8de3d0; background: #006a6233; }
+    #region-fields input { width: 100%; }
+    #chapters-text { display: block; width: 100%; padding: 8px; font: inherit; resize: vertical; }
+    @media (max-width: 790px) {
+      .workspace { grid-template-columns: 1fr; }
+      .shell { width: calc(100% - 26px); }
+      .step, .monitor-heading, .results { padding-inline: 17px; }
+      pre { padding-inline: 17px; }
+      .monitor { position: static; max-height: none; }
+      .top nav { flex-basis: 100%; margin-left: 0; }
+      .monitor > details, #queue-selected, #job-retry, #job-retry-message { margin-inline: 17px; }
+    }
+    @media (max-width: 380px) {
+      .choice-grid { grid-template-columns: 1fr; }
+      .line { flex-wrap: wrap; }
+      .line input { flex-basis: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="shell">
+      <svg class="mark" viewBox="0 0 44 44" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="2" y="6" width="40" height="32" rx="5"/>
+        <path d="M10 6v32M34 6v32M2 15h8m-8 14h8m24-14h8m-8 14h8"/>
+        <path d="M19 16l9 6-9 6z" fill="currentColor" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <h1>Студия серий</h1>
+        <p>Монтаж кадров и озвучки для каждого языка</p>
+        <p id="engine-health" role="status"></p>
+      </div>
+      <nav aria-label="Разделы студии">
+        <a href="#project-heading">Проект</a>
+        <a href="#export-heading">Экспорт</a>
+        <a href="#tools-heading">Материалы</a>
+        <a href="#monitor-title">Очередь и файлы</a>
+      </nav>
+    </div>
+  </header>
+  <main class="shell">
+    <div class="workspace">
+      <form class="panel" id="settings" novalidate>
+        <section class="step" aria-labelledby="project-heading">
+          <div class="heading"><span class="step-no">01</span><h2 id="project-heading">Проект</h2></div>
+          <label for="projects" class="small">Найденные проекты</label>
+          <select id="projects">
+            <option value="">Загрузка списка…</option>
+          </select>
+          <label for="path" class="project-field">Папка с series.json</label>
+          <div class="line">
+            <input type="text" id="path" placeholder="output/seventh-car" spellcheck="false" autocomplete="off">
+            <button type="button" id="load">Открыть</button>
+          </div>
+          <p class="small feedback" id="project-message" role="status"></p>
+          <details id="project-wizard">
+            <summary>Создать проект</summary>
+            <label for="new-name">Название</label>
+            <input type="text" id="new-name" maxlength="120" placeholder="Седьмой вагон">
+            <label for="new-slug">Имя папки в output</label>
+            <input type="text" id="new-slug" maxlength="64" placeholder="seventh-car" spellcheck="false">
+            <label for="new-languages">Коды языков через запятую</label>
+            <input type="text" id="new-languages" value="en, ru" spellcheck="false">
+            <label for="new-source">Язык исходных надписей</label>
+            <input type="text" id="new-source" value="en" spellcheck="false">
+            <button type="button" id="create-project">Создать и открыть</button>
+            <p class="small feedback" id="create-message" role="status"></p>
+          </details>
+          <details id="readiness" hidden>
+            <summary id="readiness-summary">Паспорт готовности</summary>
+            <ul id="readiness-issues" class="small"></ul>
+          </details>
+        </section>
+        <section class="step" aria-labelledby="edition-heading">
+          <div class="heading"><span class="step-no">02</span><h2 id="edition-heading">Версии и языки</h2></div>
+          <fieldset>
+            <legend>Что собрать</legend>
+            <div class="choice-grid">
+              <label class="choice">
+                <input type="radio" name="mode" value="youtube" checked>
+                <span><strong>Видео для YouTube</strong><small>Один MP4 и дорожки WAV</small></span>
+              </label>
+              <label class="choice">
+                <input type="radio" name="mode" value="separate">
+                <span><strong>Отдельные видео</strong><small>Свой MP4 для каждого языка</small></span>
+              </label>
+            </div>
+          </fieldset>
+          <div id="master-field" hidden>
+            <label for="master-language" class="small">Основной язык видео</label>
+            <select id="master-language" aria-describedby="master-hint"></select>
+            <p class="small hint" id="master-hint">Озвучка этого языка задаёт длительность видео и всех дублей.</p>
+          </div>
+          <div class="language-header">
+            <strong id="language-heading">Языки</strong>
+            <button type="button" id="select-ready" hidden>Выбрать готовые</button>
+          </div>
+          <div id="languages" class="language-list" role="group" aria-labelledby="language-heading"></div>
+          <p class="small hint" id="languages-hint">Откройте проект, чтобы увидеть доступные языки.</p>
+          <details id="narration-import" hidden>
+            <summary>Импортировать озвучку</summary>
+            <label for="import-language">Язык озвучки</label>
+            <select id="import-language"></select>
+            <label for="import-kind">Что импортировать</label>
+            <select id="import-kind">
+              <option value="manifest">Готовый список JSON</option>
+              <option value="folder">Папку WAV</option>
+            </select>
+            <label for="import-manifest">Путь к списку или папке внутри проекта</label>
+            <input type="text" id="import-manifest" placeholder="incoming/en/utterances.json" spellcheck="false">
+            <label id="import-folder-picker" hidden>
+              Указать имя папки перетаскиванием или выбором
+              <input type="file" id="import-folder" webkitdirectory>
+              <small>Папка уже должна лежать внутри проекта. При необходимости допишите путь.</small>
+            </label>
+            <label><input type="checkbox" id="import-replace"> Заменить существующий список реплик</label>
+            <div class="line">
+              <button type="button" id="import-check">Проверить</button>
+              <button type="button" id="import-save">Импортировать</button>
+            </div>
+            <p class="small feedback" id="import-message" role="status"></p>
+            <ul id="import-issues" class="small"></ul>
+          </details>
+          <details id="replace-narration" hidden>
+            <summary>Заменить одну реплику</summary>
+            <label for="replace-language">Язык</label>
+            <select id="replace-language"></select>
+            <button type="button" id="replace-load">Загрузить список реплик</button>
+            <div id="replace-fields" hidden>
+              <label for="replace-row">Реплика</label>
+              <select id="replace-row"></select>
+              <label for="replace-audio">Путь к новому WAV внутри проекта</label>
+              <input type="text" id="replace-audio" placeholder="incoming/new-line.wav" spellcheck="false">
+              <button type="button" id="replace-check">Проверить</button>
+              <button type="button" id="replace-save">Заменить реплику</button>
+            </div>
+            <p id="replace-message" class="small feedback" role="status"></p>
+          </details>
+          <details id="pronunciation" hidden>
+            <summary>Словарь произношения</summary>
+            <label for="pronunciation-language">Язык</label>
+            <select id="pronunciation-language"></select>
+            <div id="pronunciation-editor" hidden>
+              <div id="pronunciation-rules"></div>
+              <button type="button" id="pronunciation-add">Добавить правило</button>
+              <label for="pronunciation-sample">Фраза для проверки</label>
+              <input type="text" id="pronunciation-sample" maxlength="4000">
+              <button type="button" id="pronunciation-test">Проверить</button>
+              <button type="button" id="pronunciation-save">Сохранить словарь</button>
+              <a id="pronunciation-export" download>Скачать JSONL для озвучки</a>
+              <p id="pronunciation-result"></p>
+            </div>
+            <p id="pronunciation-message" class="small feedback" role="status"></p>
+          </details>
+        </section>
+        <section class="step" aria-labelledby="export-heading">
+          <div class="heading"><span class="step-no">03</span><h2 id="export-heading">Экспорт</h2></div>
+          <fieldset>
+            <legend>Разрешение</legend>
+            <div class="choice-grid">
+              <label class="choice">
+                <input type="radio" name="resolution" value="1080p" checked>
+                <span><strong>1080p</strong><small>Готовое видео</small></span>
+              </label>
+              <label class="choice">
+                <input type="radio" name="resolution" value="360p">
+                <span><strong>360p</strong><small>Быстрый тест</small></span>
+              </label>
+            </div>
+          </fieldset>
+          <label for="export-scope">Что экспортировать</label>
+          <select id="export-scope">
+            <option value="">Весь проект</option>
+            <option value="chapter">Одну главу</option>
+            <option value="range">Диапазон кадров</option>
+          </select>
+          <label for="export-aspect">Формат кадра</label>
+          <select id="export-aspect" name="aspect">
+            <option value="16:9">16:9 · горизонтальный</option>
+            <option value="9:16">9:16 · вертикальный</option>
+          </select>
+          <div id="export-chapter-field" hidden>
+            <label for="export-chapter">Глава</label>
+            <select id="export-chapter"></select>
+          </div>
+          <div id="export-range-field" hidden>
+            <label for="cue-start">Первый кадр</label>
+            <select id="cue-start"></select>
+            <label for="cue-end">Последний кадр</label>
+            <select id="cue-end"></select>
+          </div>
+          <div class="actions">
+            <button type="submit" class="primary" id="build" disabled>Собрать видео</button>
+            <button type="button" id="check" disabled>Проверить входные файлы</button>
+          </div>
+          <p class="small feedback" id="action-message" role="status"></p>
+          <details class="tool-group" id="export-options">
+            <summary>Дополнительные настройки экспорта</summary>
+          <details id="export-mix" hidden>
+            <summary>Сведение звука</summary>
+            <label><input type="checkbox" id="mix-enabled"> Включить сведение при экспорте</label>
+            <div id="mix-fields" hidden>
+              <p class="small hint" id="mix-hint">Движок выровняет громкость речи. Музыка и фоновые шумы будут зациклены и приглушены во время реплик.</p>
+              <label for="mix-music">Файл музыки (необязательно)</label>
+              <input type="text" id="mix-music" placeholder="audio/music.wav" aria-describedby="mix-hint mix-path-hint">
+              <label for="mix-ambience">Файл фоновых шумов (необязательно)</label>
+              <input type="text" id="mix-ambience" placeholder="audio/ambience.wav" aria-describedby="mix-hint mix-path-hint">
+              <p class="small hint" id="mix-path-hint">Укажите пути относительно папки проекта.</p>
+              <label><input type="checkbox" id="mix-sound-map"> Добавить фоны по локациям</label>
+              <p class="small hint">Карта дополняет общий фон. В кадрах без привязки слой локации отсутствует.</p>
+              <button type="button" id="sound-map-check">Показать звуковую карту</button>
+              <p class="small feedback" id="sound-map-message" role="status"></p>
+              <ul id="sound-map-segments" hidden></ul>
+            </div>
+          </details>
+          <details id="montage-editor" hidden>
+            <summary>Монтаж отдельного кадра</summary>
+            <label for="montage-cue">Кадр</label>
+            <select id="montage-cue"></select>
+            <label for="montage-mode">Крупность</label>
+            <select id="montage-mode">
+              <option value="auto">Автоматически</option>
+              <option value="wide">Фиксированный общий план</option>
+              <option value="close">Фиксированный крупный план</option>
+              <option value="cut">Резкая склейка на крупный план</option>
+            </select>
+            <div id="montage-at-field" hidden>
+              <label for="montage-at">Секунд от начала кадра</label>
+              <input type="number" id="montage-at" min="0.04" max="8.96" step="0.04" value="2.00">
+            </div>
+            <p class="small hint">Обведите важный объект на кадре. Крупный план сохранит его в кадре.</p>
+            <div id="focus-editor" hidden style="position:relative;touch-action:none;cursor:crosshair">
+              <img id="focus-image" alt="Кадр для выбора области" draggable="false" style="display:block;width:100%">
+              <div id="focus-box" hidden style="position:absolute;pointer-events:none;border:2px solid #fff;box-shadow:0 0 0 1px #111;background:#1685ff22"></div>
+              <div id="vertical-guide" hidden style="position:absolute;inset-block:0;width:31.64%;pointer-events:none;border:2px dashed #ffe36c;box-sizing:border-box"></div>
+            </div>
+            <button type="button" id="focus-clear">Убрать область</button>
+            <label><input type="checkbox" id="vertical-custom"> Задать центр для вертикального видео</label>
+            <div id="vertical-center-field" hidden>
+              <label for="vertical-center">Положение центра · <output id="vertical-value" for="vertical-center">50%</output></label>
+              <input type="range" id="vertical-center" min="0" max="100" step="1" value="50">
+            </div>
+            <button type="button" id="montage-save">Сохранить</button>
+            <p class="small feedback" id="montage-message" role="status"></p>
+          </details>
+          <div id="resume-field" hidden>
+            <label><input type="checkbox" id="resume-enabled" aria-describedby="resume-hint" checked> Продолжить с готовых этапов</label>
+            <p class="small hint" id="resume-hint">Движок повторно использует готовые этапы, если исходные файлы и настройки совпадают.</p>
+          </div>
+          <details id="publication-package" hidden>
+            <summary>Пакет публикации</summary>
+            <p class="small hint">Движок берёт готовые видео и дорожки для выбранного режима, языков и формата. Сначала соберите видео с этими настройками.</p>
+            <div class="actions">
+              <button type="button" id="package-check" disabled>Проверить комплект</button>
+              <button type="button" id="package-build" disabled>Собрать пакет</button>
+            </div>
+            <p class="small feedback" id="package-message" role="status"></p>
+            <code id="package-folder" hidden></code>
+            <ul class="small" id="package-issues"></ul>
+            <ul class="result-list" id="package-outputs"></ul>
+          </details>
+          <details id="sync-panel" hidden>
+            <summary>Синхронизация дубляжей</summary>
+            <button type="button" id="sync-check">Рассчитать темп по блокам</button>
+            <button type="button" id="sync-compare">Сравнить основные языки</button>
+            <p id="master-compare-message" class="small feedback" role="status"></p>
+            <ul id="master-compare-results" class="small"></ul>
+            <p id="sync-message" class="small feedback" role="status"></p>
+            <div id="sync-listen" hidden>
+              <p id="sync-listen-title"></p>
+              <p id="sync-listen-message" class="small feedback" role="status"></p>
+              <label for="sync-source-audio">Исходный блок</label>
+              <audio id="sync-source-audio" controls style="width:100%"></audio>
+              <div id="sync-adjusted" hidden>
+                <label for="sync-adjusted-audio">После подгонки</label>
+                <audio id="sync-adjusted-audio" controls style="width:100%"></audio>
+              </div>
+            </div>
+            <div id="sync-results"></div>
+          </details>
+          <details class="small">
+            <summary>Распознавание надписей</summary>
+            <p>Обновите распознавание, если добавили кадры с надписями для перевода.</p>
+            <button type="button" id="scan" disabled>Распознать надписи</button>
+          </details>
+          </details>
+        </section>
+        <section class="step project-tools" aria-labelledby="tools-heading">
+          <div class="heading"><h2 id="tools-heading">Материалы и проверки</h2></div>
+          <details id="cast" hidden>
+            <summary>Персонажи</summary>
+            <label for="cast-scene">Кадр</label>
+            <select id="cast-scene"></select>
+            <p class="small feedback" id="cast-message" role="status"></p>
+            <div id="cast-cards"></div>
+          </details>
+          <details id="library" hidden>
+            <summary>Локации и реквизит</summary>
+            <label for="library-search">Найти по названию или описанию</label>
+            <input type="search" id="library-search" placeholder="Например, билет">
+            <label for="library-kind">Тип</label>
+            <select id="library-kind">
+              <option value="">Все материалы</option>
+              <option value="location">Локации</option>
+              <option value="prop">Реквизит</option>
+            </select>
+            <label for="library-cue">Кадр</label>
+            <select id="library-cue"></select>
+            <p class="small feedback" id="library-message" role="status"></p>
+            <div id="library-items"></div>
+          </details>
+          <details id="continuity" hidden>
+            <summary>Согласованность кадров</summary>
+            <button type="button" id="continuity-check">Проверить разметку</button>
+            <p class="small feedback" id="continuity-message" role="status"></p>
+            <div id="continuity-issues"></div>
+          </details>
+          <details id="diagnostics" hidden>
+            <summary>Диагностика для агентов</summary>
+            <label for="diagnostics-language">Язык проверки</label>
+            <select id="diagnostics-language"></select>
+            <button type="button" id="diagnostics-check">Проверить проект</button>
+            <p class="small feedback" id="diagnostics-message" role="status"></p>
+            <ul id="diagnostics-issues"></ul>
+            <div id="diagnostics-output" hidden>
+              <label for="diagnostics-json">Отчёт API в формате JSON</label>
+              <textarea id="diagnostics-json" rows="8" readonly></textarea>
+            </div>
+          </details>
+          <details id="build-comparison" hidden>
+            <summary>Сравнение сборок</summary>
+            <button type="button" id="comparison-load">Обновить список сборок</button>
+            <label for="comparison-before">Предыдущая сборка</label>
+            <select id="comparison-before" disabled></select>
+            <label for="comparison-after">Новая сборка</label>
+            <select id="comparison-after" disabled></select>
+            <button type="button" id="comparison-run" disabled>Сравнить</button>
+            <p class="small feedback" id="comparison-message" role="status"></p>
+            <ul id="comparison-results"></ul>
+            <details id="comparison-details" hidden>
+              <summary>Подробный отчёт API</summary>
+              <textarea id="comparison-json" aria-label="Отчёт сравнения в формате JSON" rows="8" readonly></textarea>
+            </details>
+          </details>
+          <details id="quality-profile" hidden>
+            <summary>Профиль качества проекта</summary>
+            <p class="small">Длительности указываются в секундах. Профиль используется при проверке проекта.</p>
+            <button type="button" id="quality-load">Загрузить профиль</button>
+            <fieldset id="quality-fields" disabled>
+              <legend>Параметры проверки</legend>
+              <label for="quality-min_shot_seconds">Минимальная длительность кадра</label>
+              <input type="number" id="quality-min_shot_seconds" min="0" step="any" required>
+              <label for="quality-max_shot_seconds">Максимальная длительность кадра</label>
+              <input type="number" id="quality-max_shot_seconds" min="0" step="any" required>
+              <label for="quality-min_cut_seconds">Минимальный интервал между сменами плана</label>
+              <input type="number" id="quality-min_cut_seconds" min="0" step="any" required>
+              <label for="quality-max_cut_seconds">Максимальный интервал между сменами плана</label>
+              <input type="number" id="quality-max_cut_seconds" min="0" step="any" required>
+              <label for="quality-art_language">Код языка надписей на кадрах</label>
+              <input type="text" id="quality-art_language" placeholder="en" autocomplete="off" spellcheck="false" required>
+              <button type="button" class="primary" id="quality-save">Сохранить профиль</button>
+            </fieldset>
+            <p class="small feedback" id="quality-message" role="status"></p>
+            <ul id="quality-warnings"></ul>
+          </details>
+          <details id="readability" hidden>
+            <summary>Читаемость после кадрирования</summary>
+            <label for="readability-language">Язык озвучки</label>
+            <select id="readability-language"></select>
+            <label for="readability-aspect">Формат кадра</label>
+            <select id="readability-aspect">
+              <option value="16:9">16:9 · горизонтальный</option>
+              <option value="9:16">9:16 · вертикальный</option>
+            </select>
+            <label for="readability-resolution">Разрешение</label>
+            <select id="readability-resolution">
+              <option value="1080p">1080p</option>
+              <option value="360p">360p</option>
+            </select>
+            <button type="button" id="readability-check">Проверить кадрирование</button>
+            <p class="small feedback" id="readability-message" role="status"></p>
+            <div id="readability-issues"></div>
+          </details>
+          <details id="repeats" hidden>
+            <summary>Поиск повторов</summary>
+            <p class="small">Отмечает иллюстрации, которые держатся дольше 9 секунд подряд или появляются не менее трёх раз за минуту.</p>
+            <label for="repeats-language">Язык озвучки</label>
+            <select id="repeats-language"></select>
+            <button type="button" id="repeats-check">Найти повторы</button>
+            <p class="small feedback" id="repeats-message" role="status"></p>
+            <div id="repeats-issues"></div>
+          </details>
+          <details id="subtitles" hidden>
+            <summary>Субтитры</summary>
+            <label for="subtitles-language">Язык субтитров</label>
+            <select id="subtitles-language"></select>
+            <label for="subtitles-master">Тайминг субтитров</label>
+            <select id="subtitles-master"></select>
+            <p class="small hint">Для общего видео YouTube выберите язык, который использовали как мастер при сборке.</p>
+            <div class="line">
+              <button type="button" id="subtitles-srt">Скачать SRT</button>
+              <button type="button" id="subtitles-vtt">Скачать VTT</button>
+            </div>
+            <p class="small feedback" id="subtitles-message" role="status"></p>
+          </details>
+          <details id="chapters" hidden>
+            <summary>Главы для YouTube</summary>
+            <label for="chapters-master">Мастер тайминга</label>
+            <select id="chapters-master"></select>
+            <label for="chapters-language">Язык заголовков</label>
+            <select id="chapters-language"></select>
+            <button type="button" id="chapters-check">Сформировать главы</button>
+            <p class="small feedback" id="chapters-message" role="status"></p>
+            <div id="chapters-output" hidden>
+              <label for="chapters-text">Текст для описания видео</label>
+              <textarea id="chapters-text" rows="5" readonly></textarea>
+              <button type="button" id="chapters-copy">Копировать</button>
+              <p class="small" id="chapters-copy-message" role="status"></p>
+            </div>
+          </details>
+          <details id="regions" hidden>
+            <summary>Надписи на кадре</summary>
+            <fieldset id="region-editor">
+              <label for="region-cue">Кадр</label>
+              <select id="region-cue"></select>
+              <div id="region-frame" hidden>
+                <p class="small" id="region-mode"></p>
+                <p class="small">Обведите надпись на кадре. Можно выделить несколько областей.</p>
+                <div id="region-canvas">
+                  <img id="region-image" alt="Исходный кадр для разметки" draggable="false">
+                  <div id="region-boxes" aria-hidden="true"></div>
+                </div>
+                <div id="region-fields" hidden>
+                  <label for="region-index">Область</label>
+                  <select id="region-index"></select>
+                  <label for="region-text">Исходная надпись</label>
+                  <input type="text" id="region-text" maxlength="200" autocomplete="off" spellcheck="false">
+                  <label for="region-angle">Наклон в градусах</label>
+                  <input type="number" id="region-angle" min="-180" max="180" step="any">
+                  <button type="button" id="region-delete">Удалить область</button>
+                </div>
+                <label for="region-language">Язык предпросмотра</label>
+                <select id="region-language"></select>
+                <div class="actions">
+                  <button type="button" id="region-preview">Проверить перевод</button>
+                  <button type="button" class="primary" id="region-save">Сохранить разметку</button>
+                  <button type="button" id="region-restore">Убрать ручную разметку</button>
+                </div>
+                <img id="region-preview-image" alt="Кадр с переводом надписи" hidden>
+              </div>
+            </fieldset>
+            <p class="small feedback" id="region-message" role="status"></p>
+          </details>
+          <details id="preview" hidden>
+            <summary>Предпросмотр раскадровки с озвучкой</summary>
+            <label for="preview-language">Язык озвучки</label>
+            <div class="line">
+              <select id="preview-language"></select>
+              <button type="button" id="preview-load">Открыть предпросмотр</button>
+            </div>
+            <p class="small feedback" id="preview-message" role="status"></p>
+            <div id="preview-player" hidden>
+              <div style="overflow:hidden;background:#111">
+                <img id="preview-frame" alt="Кадр раскадровки" style="display:block;width:100%;aspect-ratio:16/9;object-fit:contain">
+              </div>
+              <audio id="preview-audio" controls preload="metadata" style="width:100%"></audio>
+              <div aria-label="Реплика для текущего кадра">
+                <strong>Реплика в этом кадре</strong>
+                <div class="small" id="preview-speaker"></div>
+                <p id="preview-text"></p>
+              </div>
+              <label for="preview-cue">Перейти к кадру</label>
+              <select id="preview-cue"></select>
+            </div>
+          </details>
+        </section>
+      </form>
+      <aside class="panel monitor" aria-labelledby="monitor-title">
+        <details id="build-queue" open>
+          <summary>Очередь сборок</summary>
+          <p id="queue-message" class="small feedback" role="status"></p>
+          <ul id="queue-jobs" class="result-list"></ul>
+        </details>
+        <div class="monitor-heading">
+          <h2 id="monitor-title">Ход сборки</h2>
+          <span class="status" id="status" role="status" data-state="idle">Ожидание</span>
+        </div>
+        <p id="queue-selected" class="small hint"></p>
+        <button type="button" id="job-retry" hidden>Повторить с кэшем</button>
+        <p id="job-retry-message" class="small feedback" role="status" hidden></p>
+        <pre id="log" tabindex="0" aria-label="Журнал сборки">Здесь появится журнал после запуска проверки или сборки.</pre>
+        <details id="job-diagnostics" hidden>
+          <summary>Что исправить после сборки</summary>
+          <ul id="job-diagnostics-issues"></ul>
+        </details>
+        <section class="results" aria-labelledby="result-heading">
+          <h2 id="result-heading">Готовые файлы</h2>
+          <p class="small hint" id="results-hint">Результаты появятся после сборки.</p>
+          <ul class="result-list" id="outputs"></ul>
+        </section>
+      </aside>
+    </div>
+  </main>
+  <script>
+    "use strict";
+    const byId = (id) => document.getElementById(id);
+    const form = byId("settings");
+    const pathInput = byId("path");
+    const projects = byId("projects");
+    const masterLanguage = byId("master-language");
+    const list = byId("languages");
+    const actionMessage = byId("action-message");
+    const projectMessage = byId("project-message");
+    const status = byId("status");
+    const log = byId("log");
+    const outputs = byId("outputs");
+    const resultsHint = byId("results-hint");
+    const locale = new Intl.DisplayNames(["ru"], {type: "language"});
+    const stateLabels = {
+      queued: "В очереди", running: "В работе", succeeded: "Готово", failed: "Ошибка"
+    };
+    let project = null;
+    let cast = null;
+    let library = null;
+    let active = false;
+    let loading = false;
+    let selectedJob = null;
+    let selectedJobRequest = 0;
+    let queueUpdating = false;
+    let queueSnapshot = "";
+    const selected = new Set();
+
+    function message(element, content = "", error = false) {
+      element.textContent = content;
+      element.classList.toggle("error", error);
+    }
+
+    async function api(url, options) {
+      const response = await fetch(url, options);
+      const data = await response.json();
+      if (!response.ok) {
+        const error = new Error(data.error || "Сервер не смог выполнить запрос.");
+        error.status = response.status;
+        throw error;
+      }
+      return data;
+    }
+
+    function settings() {
+      return new FormData(form);
+    }
+
+    function modeIsYouTube() {
+      return form.querySelector("input[name=mode]:checked").value === "youtube";
+    }
+
+    function updateControls() {
+      const loaded = project && pathInput.value.trim() === project.path;
+      const youtube = modeIsYouTube();
+      const source = project?.languages.find((item) => item.code === masterLanguage.value);
+      const usable = loaded && (youtube ? source?.ready : selected.size > 0);
+      const disabled = active || loading;
+      byId("build").disabled = disabled || !usable;
+      byId("check").disabled = disabled || !usable;
+      byId("resume-field").hidden = !loaded;
+      byId("resume-enabled").disabled = disabled || !usable;
+      byId("job-retry").disabled = disabled;
+      byId("publication-package").hidden = !loaded;
+      byId("diagnostics").hidden = !loaded;
+      byId("build-comparison").hidden = !loaded;
+      byId("quality-profile").hidden = !loaded;
+      byId("quality-fields").disabled = disabled || !loaded || qualityBusy || !qualityLoaded;
+      byId("quality-load").disabled = disabled || !loaded || qualityBusy;
+      byId("package-check").disabled = disabled || !usable;
+      byId("package-build").disabled = disabled || !usable;
+      byId("scan").disabled = disabled || !loaded;
+      byId("load").disabled = disabled || !pathInput.value.trim();
+      pathInput.disabled = disabled;
+      projects.disabled = disabled;
+      byId("master-field").hidden = !loaded || !youtube;
+      byId("sync-panel").hidden = !loaded || !youtube;
+      byId("export-mix").hidden = !loaded;
+      byId("mix-enabled").disabled = disabled || !loaded;
+      for (const id of ["mix-music", "mix-ambience", "mix-sound-map"]) {
+        byId(id).disabled = disabled || !loaded || !byId("mix-enabled").checked;
+      }
+      updateSoundMapControls(loaded, disabled);
+      masterLanguage.disabled = disabled || !loaded || !source;
+      for (const input of form.querySelectorAll("input[type=radio]")) {
+        input.disabled = disabled;
+      }
+      byId("select-ready").disabled = disabled || !loaded;
+      byId("languages-hint").textContent = !loaded
+        ? "Откройте проект, чтобы увидеть доступные языки."
+        : youtube && !source?.ready
+          ? "Добавьте озвучку основного языка или выберите отдельные видео."
+          : youtube
+            ? "Основной язык входит в MP4. Остальные выбранные языки сохраняются как WAV."
+            : "Выберите языки с готовой озвучкой. Для каждого сохранится отдельный MP4.";
+      return {loaded, disabled, youtube};
+    }
+
+    function languageName(code) {
+      try {
+        return locale.of(code);
+      } catch {
+        return code;
+      }
+    }
+
+    function renderReadiness() {
+      const panel = byId("readiness");
+      panel.hidden = !project;
+      if (!project) return;
+      const items = [...(project.issues || [])];
+      for (const language of project.languages) {
+        for (const issue of language.issues || []) items.push({...issue, language: language.code});
+      }
+      const labels = {
+        missing_storyboard: "Нет раскадровки", missing_frame: "Нет картинки",
+        incomplete_utterances: "Не хватает реплик или файлов в списке озвучки",
+        missing_timeline: "Нет тайминга", missing_audio: "Нет озвучки",
+        unknown_cue: "Для метки нет кадра", invalid_timeline: "Ошибка в тайминге",
+        invalid_cue: "Ошибка в метке кадра", missing_voice_catalog: "Нет списка голосов",
+        missing_label_translation: "Нет перевода надписи для отдельной версии"
+      };
+      byId("readiness-summary").textContent = items.length
+        ? `Паспорт готовности · замечаний: ${items.length}`
+        : "Паспорт готовности · замечаний нет";
+      const rows = items.map((issue) => {
+        const row = document.createElement("li");
+        row.textContent = [issue.language && languageName(issue.language), labels[issue.code] || issue.code,
+          issue.cue, issue.text, issue.path].filter(Boolean).join(" · ");
+        return row;
+      });
+      byId("readiness-issues").replaceChildren(...rows);
+    }
+
+    function renderLanguages() {
+      const {loaded, disabled, youtube} = updateControls();
+      byId("narration-import").hidden = !loaded;
+      byId("replace-narration").hidden = !loaded || !project.languages.some((item) => item.ready);
+      byId("pronunciation").hidden = !loaded;
+      byId("cast").hidden = !loaded;
+      byId("library").hidden = !loaded;
+      byId("continuity").hidden = !loaded;
+      byId("readability").hidden = !loaded || !project.languages.some((item) => item.ready);
+      byId("repeats").hidden = byId("readability").hidden;
+      byId("subtitles").hidden = byId("readability").hidden;
+      byId("chapters").hidden = byId("readability").hidden;
+      byId("regions").hidden = !loaded || !project.cues.length;
+      byId("preview").hidden = !loaded;
+      byId("montage-editor").hidden = !loaded || !project.cues.length;
+      byId("select-ready").hidden = !loaded || !project.languages.some((item) => item.ready);
+      list.replaceChildren();
+      if (!loaded) return;
+      for (const {code, ready} of project.languages) {
+        const required = youtube && code === masterLanguage.value;
+        const label = document.createElement("label");
+        label.className = "choice";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = ready && (required || selected.has(code));
+        input.disabled = disabled || required || !ready;
+        input.addEventListener("change", () => {
+          if (input.checked) selected.add(code);
+          else selected.delete(code);
+          updateControls();
+        });
+        const labelText = document.createElement("span");
+        const name = document.createElement("strong");
+        name.textContent = languageName(code);
+        const detail = document.createElement("small");
+        detail.textContent = !ready ? "Нет входных файлов" : required ? "Основной язык" : code;
+        labelText.append(name, detail);
+        label.append(input, labelText);
+        list.append(label);
+      }
+    }
+
+    function renderCast() {
+      const container = byId("cast-cards");
+      container.replaceChildren();
+      if (!cast) return;
+      const scene = cast.scenes.find(({cue}) => cue === byId("cast-scene").value);
+      const characters = scene
+        ? cast.characters.filter(({id}) => scene.characters.includes(id))
+        : cast.characters;
+      message(byId("cast-message"), characters.length ? "" : scene
+        ? "В этом кадре нет привязанных персонажей. В списке можно открыть все карточки."
+        : "В проекте пока нет карточек или голосов.");
+      for (const character of characters) {
+        const card = document.createElement("article");
+        const voices = character.languages;
+        const first = voices[project.source_language]?.[0] || Object.values(voices)[0]?.[0];
+        const title = document.createElement("h3");
+        title.textContent = first?.name || first?.role || character.id;
+        card.append(title);
+        if (character.portrait_url) {
+          const frame = document.createElement("div");
+          frame.style.cssText = "position:relative;width:120px;aspect-ratio:1;overflow:hidden;border-radius:8px";
+          const portrait = document.createElement("img");
+          portrait.src = character.portrait_url;
+          portrait.alt = title.textContent;
+          portrait.loading = "lazy";
+          const grid = character.portrait_grid;
+          portrait.style.cssText = grid
+            ? `position:absolute;width:200%;max-width:none;height:200%;left:${-100 * grid[0]}%;top:${-100 * grid[1]}%`
+            : "width:100%;height:100%;object-fit:cover";
+          frame.append(portrait);
+          card.append(frame);
+        }
+        for (const field of ["traits", "appearance", "continuity"]) {
+          if (!character[field]) continue;
+          const line = document.createElement("p");
+          line.textContent = character[field];
+          card.append(line);
+        }
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = "Имена и голоса по языкам";
+        const list = document.createElement("ul");
+        for (const [code, rows] of Object.entries(voices)) {
+          for (const voice of rows) {
+            const line = document.createElement("li");
+            line.textContent = [code, voice.name || voice.role, voice.role === voice.name ? null : voice.role,
+              voice.gender, voice.voice_id, voice.delivery].filter(Boolean).join(" · ");
+            list.append(line);
+          }
+        }
+        details.append(summary, list);
+        if (list.childElementCount) card.append(details);
+        container.append(card);
+      }
+    }
+
+    async function loadCast() {
+      if (!project || cast) return;
+      const path = project.path;
+      message(byId("cast-message"), "Загружаем персонажей…");
+      try {
+        const data = await api("/api/project/characters?" + new URLSearchParams({path}));
+        if (project?.path !== path) return;
+        cast = data;
+        byId("cast-scene").replaceChildren(new Option("Все персонажи", ""),
+          ...data.scenes.map(({cue}) => new Option(cue, cue)));
+        renderCast();
+      } catch (error) {
+        if (project?.path === path) message(byId("cast-message"), error.message, true);
+      }
+    }
+    byId("cast").addEventListener("toggle", () => {
+      if (byId("cast").open) loadCast();
+    });
+    byId("cast-scene").addEventListener("change", renderCast);
+
+    function renderLibrary() {
+      const container = byId("library-items");
+      container.replaceChildren();
+      if (!library) return;
+      const kind = byId("library-kind").value;
+      const cue = byId("library-cue").value;
+      const search = byId("library-search").value.trim().toLocaleLowerCase("ru");
+      const entries = library.items.filter((item) =>
+        (!kind || item.kind === kind) && (!cue || item.cues?.includes(cue))
+        && [item.id, item.name, item.description].some((field) => field.toLocaleLowerCase("ru").includes(search))
+      );
+      message(byId("library-message"), entries.length ? "" : "Подходящих материалов пока нет.");
+      for (const entry of entries) {
+        const card = document.createElement("article");
+        const title = document.createElement("h3");
+        title.textContent = entry.name;
+        const description = document.createElement("p");
+        description.textContent = entry.description;
+        card.append(title, description);
+        for (const ref of entry.references) {
+          const link = document.createElement("a");
+          link.href = ref.url;
+          link.target = "_blank";
+          link.rel = "noopener";
+          const image = document.createElement("img");
+          image.src = ref.url;
+          image.alt = "";
+          image.loading = "lazy";
+          image.style.cssText = "display:block;width:180px;max-width:100%;height:auto";
+          link.append(image, document.createTextNode(ref.label));
+          const caption = document.createElement("p");
+          caption.append(link, document.createElement("br"), document.createTextNode(ref.image));
+          card.append(caption);
+        }
+        for (const issue of entry.issues) {
+          const warning = document.createElement("p");
+          warning.textContent = issue.image ? "Нет изображения: " + issue.image : "Кадр не найден: " + issue.cue;
+          card.append(warning);
+        }
+        container.append(card);
+      }
+    }
+
+    async function loadLibrary() {
+      if (!project || library) return;
+      const path = project.path;
+      message(byId("library-message"), "Загружаем библиотеку…");
+      try {
+        const data = await api("/api/project/library?" + new URLSearchParams({path}));
+        if (project?.path !== path) return;
+        library = data;
+        byId("library-cue").replaceChildren(new Option("Все кадры", ""),
+          ...data.cues.map((cue) => new Option(cue, cue)));
+        renderLibrary();
+      } catch (error) {
+        if (project?.path === path) message(byId("library-message"), error.message, true);
+      }
+    }
+    byId("library").addEventListener("toggle", () => {
+      if (byId("library").open) loadLibrary();
+    });
+    byId("library-search").addEventListener("input", renderLibrary);
+    byId("library-kind").addEventListener("change", renderLibrary);
+    byId("library-cue").addEventListener("change", renderLibrary);
+
+    byId("continuity-check").addEventListener("click", async () => {
+      const current = project;
+      if (!current) return;
+      const button = byId("continuity-check");
+      const feedback = byId("continuity-message");
+      const results = byId("continuity-issues");
+      const labels = {
+        unknown_cue: "Кадр не найден",
+        rain_inside_dry_location: "Дождь в сухом помещении",
+        location_mismatch: "Место отличается от сценария",
+        outfit_changed: "Одежда изменилась между соседними кадрами",
+        reader_cannot_see_text: "Герой не видит сторону с надписью",
+        viewer_cannot_see_text: "Зритель не видит сторону с надписью",
+        visual_review: "Нужно пересмотреть кадр",
+      };
+      button.disabled = true;
+      results.replaceChildren();
+      message(feedback, "Проверяем разметку…");
+      try {
+        const report = await api("/api/project/continuity?" + new URLSearchParams({path: current.path}));
+        if (current !== project) return;
+        message(feedback, `Размечено кадров: ${report.annotated_cues} из ${report.total_cues}. Замечаний: ${report.issues.length}.`);
+        for (const issue of report.issues) {
+          const card = document.createElement("article");
+          const title = document.createElement("h3");
+          title.textContent = issue.cue + " · " + labels[issue.code];
+          card.append(title);
+          const detail = [issue.actor, issue.place, issue.expected_place, issue.review || issue.notes].filter(Boolean);
+          if (issue.before) detail.push(issue.before + " → " + issue.after);
+          if (detail.length) {
+            const line = document.createElement("p");
+            line.textContent = detail.join(" · ");
+            card.append(line);
+          }
+          for (const [image, cue] of [[issue.previous_image_url, issue.previous_cue], [issue.image_url, issue.cue]]) {
+            if (!image) continue;
+            const link = document.createElement("a");
+            link.href = image;
+            link.target = "_blank";
+            link.rel = "noopener";
+            const thumb = document.createElement("img");
+            thumb.src = image;
+            thumb.alt = "Кадр " + cue;
+            thumb.style.cssText = "width:145px;max-width:48%;height:auto;margin:0 4px 4px 0";
+            link.append(thumb);
+            card.append(link);
+          }
+          results.append(card);
+        }
+      } catch (error) {
+        if (current === project) message(feedback, error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    const readabilityFields = ["language", "aspect", "resolution"];
+    const readabilityButton = byId("readability-check");
+    const readabilityMessage = byId("readability-message");
+    const readabilityIssues = byId("readability-issues");
+    let readabilityRequest = 0;
+
+    function resetReadability() {
+      readabilityRequest++;
+      readabilityButton.disabled = false;
+      readabilityIssues.replaceChildren();
+      message(readabilityMessage);
+    }
+
+    for (const field of readabilityFields) {
+      byId("readability-" + field).addEventListener("change", resetReadability);
+    }
+
+    readabilityButton.addEventListener("click", async () => {
+      const current = project;
+      if (!current || loading || pathInput.value.trim() !== current.path) return;
+      resetReadability();
+      const request = readabilityRequest;
+      const isCurrent = () => project === current && request === readabilityRequest;
+      const params = new URLSearchParams({path: current.path});
+      for (const field of readabilityFields) params.set(field, byId("readability-" + field).value);
+      readabilityButton.disabled = true;
+      message(readabilityMessage, "Проверяем размеры и обрезку…");
+      try {
+        const report = await api("/api/project/readability?" + params);
+        if (!isCurrent()) return;
+        message(readabilityMessage, `Проверено отрезков: ${report.checked_shots} из ${report.total_shots}. Замечаний: ${report.issues.length}.`);
+        const labels = {clipped: "Частично за краем", outside: "Полностью за кадром", too_small: "Слишком мелко"};
+        for (const issue of report.issues) {
+          const card = document.createElement("article");
+          const title = document.createElement("h3");
+          title.textContent = `${issue.cue} · ${issue.label} · ${labels[issue.code]}`;
+          const detail = document.createElement("p");
+          const plan = issue.plan === "close" ? "крупный план" : "общий план";
+          const kind = issue.kind === "text" ? "надпись" : "предмет";
+          detail.textContent = `${issue.start.toFixed(2)}–${issue.end.toFixed(2)} с · ${plan} · ${kind} · ${Math.round(issue.visible_fraction * 100)}% в кадре · ${Math.round(issue.width_px)} × ${Math.round(issue.height_px)} пикс.`;
+          card.append(title, detail);
+          if (issue.image_url) {
+            const link = document.createElement("a");
+            link.href = issue.image_url;
+            link.target = "_blank";
+            link.rel = "noopener";
+            const image = document.createElement("img");
+            image.src = issue.image_url;
+            image.alt = "Исходный кадр " + issue.cue;
+            image.loading = "lazy";
+            image.style.cssText = "width:145px;max-width:100%;height:auto";
+            link.append(image);
+            card.append(link);
+          }
+          readabilityIssues.append(card);
+        }
+      } catch (error) {
+        if (isCurrent()) message(readabilityMessage, error.message, true);
+      } finally {
+        if (isCurrent()) readabilityButton.disabled = false;
+      }
+    });
+
+    const repeatsLanguage = byId("repeats-language");
+    const repeatsButton = byId("repeats-check");
+    const repeatsMessage = byId("repeats-message");
+    const repeatsIssues = byId("repeats-issues");
+    let repeatsRequest = 0;
+
+    function resetRepeats() {
+      repeatsRequest++;
+      repeatsButton.disabled = false;
+      repeatsIssues.replaceChildren();
+      message(repeatsMessage);
+    }
+
+    function repeatRange({start, end}) {
+      return `${start.toFixed(2)}–${end.toFixed(2)} с`;
+    }
+
+    repeatsLanguage.addEventListener("change", resetRepeats);
+    repeatsButton.addEventListener("click", async () => {
+      const current = project;
+      if (!current || loading || pathInput.value.trim() !== current.path || !repeatsLanguage.value) return;
+      resetRepeats();
+      const request = repeatsRequest;
+      const isCurrent = () => project === current && request === repeatsRequest;
+      const params = new URLSearchParams({path: current.path, language: repeatsLanguage.value});
+      repeatsButton.disabled = true;
+      message(repeatsMessage, "Ищем повторы иллюстраций…");
+      try {
+        const report = await api("/api/project/repeats?" + params);
+        if (!isCurrent()) return;
+        message(repeatsMessage, `Отрезков: ${report.total_shots}. Уникальных иллюстраций: ${report.distinct_images}. Замечаний: ${report.issues.length}.`);
+        for (const issue of report.issues) {
+          const card = document.createElement("article");
+          const title = document.createElement("h3");
+          const frequent = issue.code === "frequent_return";
+          title.textContent = `${issue.cue} · ${frequent ? "Частое возвращение" : "Долгий показ"}`;
+          const detail = document.createElement("p");
+          detail.textContent = repeatRange(issue);
+          card.append(title, detail);
+          if (frequent) {
+            const list = document.createElement("ul");
+            for (const occurrence of issue.occurrences) {
+              const item = document.createElement("li");
+              item.textContent = `${occurrence.cue} · ${repeatRange(occurrence)}`;
+              list.append(item);
+            }
+            card.append(list);
+          }
+          if (issue.image_url) {
+            const link = document.createElement("a");
+            link.href = issue.image_url;
+            link.target = "_blank";
+            link.rel = "noopener";
+            const image = document.createElement("img");
+            image.src = issue.image_url;
+            image.alt = "Исходный кадр " + issue.cue;
+            image.loading = "lazy";
+            image.style.cssText = "width:145px;max-width:100%;height:auto";
+            link.append(image);
+            card.append(link);
+          }
+          repeatsIssues.append(card);
+        }
+      } catch (error) {
+        if (isCurrent()) message(repeatsMessage, error.message, true);
+      } finally {
+        if (isCurrent()) repeatsButton.disabled = false;
+      }
+    });
+
+    const subtitlesLanguage = byId("subtitles-language");
+    const subtitlesMaster = byId("subtitles-master");
+    const subtitlesMessage = byId("subtitles-message");
+    const subtitleButtons = ["srt", "vtt"].map((format) => byId("subtitles-" + format));
+    let subtitlesRequest = null;
+
+    function resetSubtitles() {
+      subtitlesRequest?.abort();
+      subtitlesRequest = null;
+      for (const button of subtitleButtons) button.disabled = false;
+      message(subtitlesMessage);
+    }
+
+    function updateSubtitleMasters() {
+      const previous = subtitlesMaster.value;
+      const codes = [...subtitlesLanguage.options].map((option) => option.value);
+      const choices = codes.filter((code) => code !== subtitlesLanguage.value);
+      subtitlesMaster.replaceChildren(new Option("Свой тайминг", ""),
+        ...choices.map((code) => new Option("Мастер · " + languageName(code), code)));
+      if (choices.includes(previous)) subtitlesMaster.value = previous;
+      subtitlesMaster.disabled = !choices.length;
+    }
+
+    subtitlesLanguage.addEventListener("change", () => {
+      resetSubtitles();
+      updateSubtitleMasters();
+    });
+    subtitlesMaster.addEventListener("change", resetSubtitles);
+
+    async function downloadSubtitles(format) {
+      const current = project;
+      const language = subtitlesLanguage.value;
+      const master = subtitlesMaster.value;
+      if (!current || loading || subtitlesRequest || !language || pathInput.value.trim() !== current.path) return;
+      const request = new AbortController();
+      subtitlesRequest = request;
+      const isCurrent = () => project === current && subtitlesRequest === request &&
+        pathInput.value.trim() === current.path;
+      const params = new URLSearchParams({path: current.path, language, format});
+      if (master) params.set("master_language", master);
+      const filename = `${language}${master ? "-on-" + master : ""}.${format}`;
+      for (const button of subtitleButtons) button.disabled = true;
+      message(subtitlesMessage, "Готовим субтитры…");
+      try {
+        const response = await fetch("/api/project/subtitles?" + params, {signal: request.signal});
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}));
+          throw new Error(error.error || "Не удалось подготовить субтитры.");
+        }
+        const data = await response.blob();
+        if (!isCurrent()) return;
+        const url = URL.createObjectURL(data);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        message(subtitlesMessage, "Файл подготовлен · " + filename);
+      } catch (error) {
+        if (isCurrent()) message(subtitlesMessage, error.message, true);
+      } finally {
+        if (subtitlesRequest === request) {
+          subtitlesRequest = null;
+          for (const button of subtitleButtons) button.disabled = false;
+        }
+      }
+    }
+
+    for (const format of ["srt", "vtt"]) {
+      byId("subtitles-" + format).addEventListener("click", () => downloadSubtitles(format));
+    }
+
+    const diagnosticsLanguage = byId("diagnostics-language");
+    const diagnosticsButton = byId("diagnostics-check");
+    const diagnosticsMessage = byId("diagnostics-message");
+    let diagnosticsRequest = 0;
+
+    function renderDiagnosticIssues(target, issues) {
+      target.replaceChildren(...issues.map((issue) => {
+        const row = document.createElement("li");
+        row.textContent = [issue.severity, issue.language && languageName(issue.language), issue.code,
+          issue.cue, issue.file, issue.message, issue.retry_step].filter(Boolean).join(" · ");
+        return row;
+      }));
+    }
+
+    function resetDiagnostics() {
+      diagnosticsRequest++;
+      diagnosticsButton.disabled = false;
+      byId("diagnostics-output").hidden = true;
+      byId("diagnostics-json").value = "";
+      byId("diagnostics-issues").replaceChildren();
+      message(diagnosticsMessage);
+    }
+
+    diagnosticsLanguage.addEventListener("change", resetDiagnostics);
+    diagnosticsButton.addEventListener("click", async () => {
+      const current = project;
+      if (!current || loading || pathInput.value.trim() !== current.path) return;
+      resetDiagnostics();
+      const request = diagnosticsRequest;
+      const isCurrent = () => project === current && diagnosticsRequest === request &&
+        pathInput.value.trim() === current.path;
+      const params = new URLSearchParams({path: current.path});
+      if (diagnosticsLanguage.value) params.set("language", diagnosticsLanguage.value);
+      diagnosticsButton.disabled = true;
+      message(diagnosticsMessage, "Проверяем файлы проекта и озвучку…");
+      try {
+        const report = await api("/api/project/diagnostics?" + params);
+        if (!isCurrent()) return;
+        message(diagnosticsMessage, report.ready
+          ? `Проверка пройдена. Замечаний: ${report.issues.length}.`
+          : `Проверьте отчёт. Замечаний: ${report.issues.length}.`, !report.ready);
+        renderDiagnosticIssues(byId("diagnostics-issues"), report.issues);
+        byId("diagnostics-json").value = JSON.stringify(report, null, 2);
+        byId("diagnostics-output").hidden = false;
+      } catch (error) {
+        if (isCurrent()) message(diagnosticsMessage, error.message, true);
+      } finally {
+        if (diagnosticsRequest === request) diagnosticsButton.disabled = false;
+      }
+    });
+
+    const chaptersMaster = byId("chapters-master");
+    const chaptersLanguage = byId("chapters-language");
+    const chaptersButton = byId("chapters-check");
+    const chaptersText = byId("chapters-text");
+    const chaptersMessage = byId("chapters-message");
+    const chaptersCopyMessage = byId("chapters-copy-message");
+    let chaptersRequest = 0;
+
+    function resetChapters() {
+      chaptersRequest++;
+      chaptersButton.disabled = false;
+      byId("chapters-output").hidden = true;
+      chaptersText.value = "";
+      message(chaptersMessage);
+      message(chaptersCopyMessage);
+    }
+
+    for (const select of [chaptersMaster, chaptersLanguage]) select.addEventListener("change", resetChapters);
+    chaptersButton.addEventListener("click", async () => {
+      const current = project;
+      if (!current || loading || !chaptersMaster.value || !chaptersLanguage.value ||
+          pathInput.value.trim() !== current.path) return;
+      resetChapters();
+      const request = chaptersRequest;
+      const isCurrent = () => project === current && chaptersRequest === request &&
+        pathInput.value.trim() === current.path;
+      const params = new URLSearchParams({path: current.path, master_language: chaptersMaster.value,
+        language: chaptersLanguage.value});
+      chaptersButton.disabled = true;
+      message(chaptersMessage, "Рассчитываем главы по таймингу мастера…");
+      try {
+        const report = await api("/api/project/chapters?" + params);
+        if (!isCurrent()) return;
+        const issues = report.issues.map(({code, chapter}) => {
+          if (code === "too_few_chapters") return "Для YouTube нужно не менее трёх глав.";
+          if (code === "chapter_too_short") return `Глава ${chapter} короче 10 секунд.`;
+          return "Проверьте границы глав.";
+        });
+        message(chaptersMessage, report.ready ? `Готово глав: ${report.chapters.length}.`
+          : issues.join(" "), !report.ready);
+        chaptersText.value = report.text;
+        byId("chapters-output").hidden = !report.text;
+      } catch (error) {
+        if (isCurrent()) message(chaptersMessage, error.message, true);
+      } finally {
+        if (chaptersRequest === request) chaptersButton.disabled = false;
+      }
+    });
+    byId("chapters-copy").addEventListener("click", async () => {
+      const request = chaptersRequest;
+      try {
+        await navigator.clipboard.writeText(chaptersText.value);
+        if (chaptersRequest === request) message(chaptersCopyMessage, "Скопировано.");
+      } catch {
+        if (chaptersRequest !== request) return;
+        chaptersText.focus();
+        chaptersText.select();
+        message(chaptersCopyMessage, "Текст выделен. Нажмите Ctrl+C, чтобы скопировать.");
+      }
+    });
+
+    const previewAudio = byId("preview-audio");
+    const previewCue = byId("preview-cue");
+    let previewFrames = [];
+    let previewIndex = -1;
+    let previewRequest = 0;
+    let previewAnimation = 0;
+    let previewNext = null;
+
+    function resetPreview() {
+      previewRequest++;
+      previewFrames = [];
+      previewIndex = -1;
+      previewNext = null;
+      cancelAnimationFrame(previewAnimation);
+      previewAudio.pause();
+      previewAudio.removeAttribute("src");
+      previewAudio.load();
+      byId("preview-frame").removeAttribute("src");
+      byId("preview-player").hidden = true;
+      byId("preview-load").disabled = !byId("preview-language").value;
+      message(byId("preview-message"));
+    }
+
+    function updatePreviewFrame() {
+      if (!previewFrames.length) return;
+      const time = previewAudio.currentTime;
+      let first = 0;
+      let last = previewFrames.length - 1;
+      while (first < last) {
+        const middle = (first + last) >> 1;
+        if (previewFrames[middle].end <= time) first = middle + 1;
+        else last = middle;
+      }
+      const frame = previewFrames[first];
+      const image = byId("preview-frame");
+      const close = frame.close_intervals.some(([start, end]) => start <= time && time < end);
+      const {zoom, origin} = frame.crop;
+      image.style.transformOrigin = origin.map((value) => value * 100 + "%").join(" ");
+      image.style.transform = close ? `scale(${zoom})` : "";
+      if (first === previewIndex) return;
+      previewIndex = first;
+      image.src = frame.image_url;
+      image.alt = "Кадр " + frame.cue;
+      byId("preview-speaker").textContent = frame.speaker || "";
+      byId("preview-text").textContent = frame.text || "Для этого отрезка в источнике тайминга нет текста.";
+      previewCue.selectedIndex = first;
+      if (previewFrames[first + 1]) {
+        previewNext = new Image();
+        previewNext.src = previewFrames[first + 1].image_url;
+      }
+    }
+
+    function animatePreview() {
+      updatePreviewFrame();
+      if (!previewAudio.paused && !previewAudio.ended) previewAnimation = requestAnimationFrame(animatePreview);
+    }
+
+    async function openPreview() {
+      if (!project || !byId("preview-language").value) return;
+      resetPreview();
+      const request = previewRequest;
+      const feedback = byId("preview-message");
+      byId("preview-load").disabled = true;
+      message(feedback, "Готовим раскадровку и аудио…");
+      try {
+        const params = new URLSearchParams({path: project.path, language: byId("preview-language").value});
+        const data = await api("/api/project/preview?" + params);
+        if (request !== previewRequest) return;
+        previewFrames = data.frames;
+        previewCue.replaceChildren(...data.frames.map((frame, index) => new Option(frame.cue, index)));
+        previewAudio.src = data.audio_url;
+        byId("preview-player").hidden = false;
+        updatePreviewFrame();
+        message(feedback, `Кадров: ${data.frames.length}. Длительность: ${data.duration.toFixed(2)} с.`);
+      } catch (error) {
+        if (request === previewRequest) message(feedback, error.message, true);
+      } finally {
+        if (request === previewRequest) byId("preview-load").disabled = false;
+      }
+    }
+    byId("preview-load").addEventListener("click", openPreview);
+    byId("preview-language").addEventListener("change", resetPreview);
+    byId("preview").addEventListener("toggle", () => {
+      if (!byId("preview").open) previewAudio.pause();
+    });
+    previewCue.addEventListener("change", () => {
+      previewAudio.currentTime = previewFrames[previewCue.selectedIndex].start;
+      updatePreviewFrame();
+    });
+    previewAudio.addEventListener("play", () => {
+      cancelAnimationFrame(previewAnimation);
+      animatePreview();
+    });
+    for (const event of ["timeupdate", "seeked"]) previewAudio.addEventListener(event, updatePreviewFrame);
+    previewAudio.addEventListener("error", () => {
+      if (previewFrames.length) message(byId("preview-message"), "Не удалось открыть аудио. Откройте предпросмотр снова.", true);
+    });
+
+    function updateMontageMode() {
+      byId("montage-at-field").hidden = byId("montage-mode").value !== "cut";
+    }
+
+    let montageFocus = null;
+    let focusStart = null;
+    const focusEditor = byId("focus-editor");
+
+    function drawFocus(box) {
+      const overlay = byId("focus-box");
+      overlay.hidden = !box;
+      if (box) {
+        for (const [index, property] of ["left", "top", "width", "height"].entries()) {
+          overlay.style[property] = box[index] * 100 + "%";
+        }
+      }
+    }
+
+    function focusPoint(event) {
+      const bounds = focusEditor.getBoundingClientRect();
+      return [(event.clientX - bounds.left) / bounds.width, (event.clientY - bounds.top) / bounds.height]
+        .map((value) => Math.max(0, Math.min(1, value)));
+    }
+
+    function focusRectangle(event) {
+      const [x, y] = focusPoint(event);
+      return [Math.min(x, focusStart[0]), Math.min(y, focusStart[1]),
+        Math.abs(x - focusStart[0]), Math.abs(y - focusStart[1])];
+    }
+
+    focusEditor.addEventListener("pointerdown", (event) => {
+      if (!event.isPrimary || event.button !== 0 || !byId("focus-image").naturalWidth) return;
+      focusEditor.setPointerCapture(event.pointerId);
+      focusStart = focusPoint(event);
+    });
+    focusEditor.addEventListener("pointermove", (event) => {
+      if (focusStart && event.isPrimary) drawFocus(focusRectangle(event));
+    });
+    focusEditor.addEventListener("pointerup", (event) => {
+      if (!focusStart || !event.isPrimary) return;
+      const box = focusRectangle(event);
+      if (box[2] > .005 && box[3] > .005) montageFocus = box;
+      focusStart = null;
+      drawFocus(montageFocus);
+    });
+    focusEditor.addEventListener("pointercancel", () => {
+      focusStart = null;
+      drawFocus(montageFocus);
+    });
+    byId("focus-clear").addEventListener("click", () => {
+      montageFocus = null;
+      drawFocus(null);
+    });
+
+    function drawVerticalGuide() {
+      const enabled = byId("vertical-custom").checked;
+      const center = byId("vertical-center").valueAsNumber;
+      byId("vertical-center-field").hidden = !enabled;
+      const guide = byId("vertical-guide");
+      guide.hidden = !enabled;
+      guide.style.left = Math.min(68.36, Math.max(0, center - 15.82)) + "%";
+      byId("vertical-value").textContent = center + "%";
+    }
+    byId("vertical-custom").addEventListener("change", drawVerticalGuide);
+    byId("vertical-center").addEventListener("input", drawVerticalGuide);
+
+    function showMontageRule() {
+      const cue = byId("montage-cue").value;
+      const rule = project?.montage[byId("montage-cue").value] || {mode: "auto"};
+      montageFocus = rule.focus || null;
+      focusStart = null;
+      const image = Object.hasOwn(project.montage_images, cue) ? project.montage_images[cue] : "";
+      focusEditor.hidden = !image;
+      if (image) byId("focus-image").src = image;
+      drawFocus(montageFocus);
+      byId("vertical-custom").checked = Object.hasOwn(rule, "vertical_center");
+      byId("vertical-center").value = Math.round((rule.vertical_center ?? .5) * 100);
+      drawVerticalGuide();
+      byId("montage-mode").value = rule.mode;
+      byId("montage-at").value = rule.at ?? 2;
+      updateMontageMode();
+      message(byId("montage-message"));
+    }
+
+    byId("montage-mode").addEventListener("change", updateMontageMode);
+    byId("montage-cue").addEventListener("change", showMontageRule);
+    byId("montage-save").addEventListener("click", async () => {
+      const current = project;
+      if (!current || active || loading) return;
+      const cue = byId("montage-cue").value;
+      const mode = byId("montage-mode").value;
+      const rule = mode === "cut" ? {mode, at: byId("montage-at").valueAsNumber} : {mode};
+      if (montageFocus) rule.focus = montageFocus;
+      if (byId("vertical-custom").checked) rule.vertical_center = byId("vertical-center").valueAsNumber / 100;
+      const button = byId("montage-save");
+      const feedback = byId("montage-message");
+      button.disabled = true;
+      try {
+        const saved = await api("/api/project/montage", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({path: current.path, cue, rule}),
+        });
+        if (project !== current) return;
+        resetReadability();
+        resetDiagnostics();
+        if (saved.rule.mode === "auto" && Object.keys(saved.rule).length === 1) delete current.montage[cue];
+        else current.montage[cue] = saved.rule;
+        if (byId("montage-cue").value === cue) {
+          showMontageRule();
+          message(feedback, "Сохранено для " + cue + (previewFrames.length ? ". Откройте предпросмотр заново." : "."));
+        }
+      } catch (error) {
+        if (project === current) message(feedback, error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    const regionCanvas = byId("region-canvas");
+    const regionImage = byId("region-image");
+    const regionPreview = byId("region-preview-image");
+    const regionCue = byId("region-cue");
+    const regionMessage = byId("region-message");
+    let regionState = null;
+    let regionDrag = null;
+    let regionRequest = 0;
+    let regionPreviewUrl = "";
+
+    function clearRegionPreview() {
+      regionPreview.hidden = true;
+      regionPreview.removeAttribute("src");
+      if (regionPreviewUrl) URL.revokeObjectURL(regionPreviewUrl);
+      regionPreviewUrl = "";
+    }
+
+    function resetRegionEditor() {
+      regionRequest++;
+      regionState = null;
+      regionDrag = null;
+      clearRegionPreview();
+      regionImage.removeAttribute("src");
+      byId("region-frame").hidden = true;
+      byId("region-editor").disabled = false;
+      message(regionMessage);
+    }
+
+    function drawRegionBoxes(draft) {
+      if (!regionState) return;
+      const boxes = regionState.regions.map((region, index) => ({...region, selected: index === regionState.index}));
+      if (draft) boxes.push({box: draft, selected: true});
+      byId("region-boxes").replaceChildren(...boxes.map(({box, angle, selected}) => {
+        const element = document.createElement("div");
+        element.className = selected ? "region-box selected" : "region-box";
+        ["left", "top", "width", "height"].forEach((key, index) => element.style[key] = box[index] * 100 + "%");
+        element.style.transform = `rotate(${angle || 0}rad)`;
+        return element;
+      }));
+    }
+
+    function renderRegionEditor() {
+      const {index, regions, manual, ocr_marked: marked} = regionState;
+      byId("region-mode").textContent = manual ? "Сохранена ручная разметка для этой картинки."
+        : marked ? "Картинка отмечена для OCR. Сохранённые области заменят распознавание."
+        : "Картинка не отмечена для OCR. Можно добавить области вручную.";
+      byId("region-restore").disabled = !manual;
+      const control = byId("region-index");
+      control.replaceChildren(...regions.map((region, i) => new Option(
+        `${i + 1}. ${region.text || "Без текста"}`, i)));
+      control.value = index;
+      byId("region-fields").hidden = !regions.length;
+      byId("region-text").value = regions[index]?.text || "";
+      byId("region-angle").setCustomValidity("");
+      byId("region-angle").value = Number(((regions[index]?.angle || 0) * 180 / Math.PI).toFixed(4));
+      drawRegionBoxes();
+    }
+
+    async function loadRegions() {
+      const current = project;
+      const cue = regionCue.value;
+      if (!current || !cue || loading) return;
+      resetRegionEditor();
+      const request = regionRequest;
+      message(regionMessage, "Открываем кадр…");
+      try {
+        const data = await api("/api/project/regions?" + new URLSearchParams({path: current.path, cue}));
+        if (project !== current || request !== regionRequest) return;
+        regionState = {...data, manual: data.regions !== null, regions: data.regions || [], index: 0};
+        regionImage.src = data.image;
+        byId("region-frame").hidden = false;
+        renderRegionEditor();
+        message(regionMessage);
+      } catch (error) {
+        if (project === current && request === regionRequest) message(regionMessage, error.message, true);
+      }
+    }
+
+    function regionPoint(event) {
+      const {left, top, width, height} = regionCanvas.getBoundingClientRect();
+      return [(event.clientX - left) / width, (event.clientY - top) / height]
+        .map((value) => Math.max(0, Math.min(1, value)));
+    }
+
+    function regionRectangle(event) {
+      const [x, y] = regionPoint(event);
+      const [startX, startY] = regionDrag.start;
+      return [Math.min(x, startX), Math.min(y, startY), Math.abs(x - startX), Math.abs(y - startY)];
+    }
+
+    regionCanvas.addEventListener("pointerdown", (event) => {
+      if (!regionState || byId("region-editor").disabled || !regionImage.naturalWidth ||
+          !event.isPrimary || event.button !== 0) return;
+      if (regionState.regions.length >= 32) {
+        message(regionMessage, "На одном кадре можно сохранить до 32 областей.", true);
+        return;
+      }
+      regionCanvas.setPointerCapture(event.pointerId);
+      regionDrag = {id: event.pointerId, start: regionPoint(event)};
+    });
+    regionCanvas.addEventListener("pointermove", (event) => {
+      if (regionDrag?.id === event.pointerId) drawRegionBoxes(regionRectangle(event));
+    });
+    regionCanvas.addEventListener("pointerup", (event) => {
+      if (regionDrag?.id !== event.pointerId) return;
+      const box = regionRectangle(event);
+      regionDrag = null;
+      if (box[2] < .005 || box[3] < .005) {
+        drawRegionBoxes();
+        return;
+      }
+      regionState.index = regionState.regions.length;
+      regionState.regions.push({text: "", box});
+      clearRegionPreview();
+      renderRegionEditor();
+      byId("region-text").focus();
+    });
+    regionCanvas.addEventListener("lostpointercapture", () => {
+      if (!regionDrag) return;
+      regionDrag = null;
+      drawRegionBoxes();
+    });
+    byId("region-index").addEventListener("change", (event) => {
+      regionState.index = Number(event.target.value);
+      renderRegionEditor();
+    });
+    byId("region-text").addEventListener("input", (event) => {
+      const {regions, index} = regionState;
+      regions[index].text = event.target.value;
+      byId("region-index").options[index].textContent = `${index + 1}. ${event.target.value || "Без текста"}`;
+      clearRegionPreview();
+    });
+    byId("region-angle").addEventListener("input", (event) => {
+      const input = event.target;
+      const degrees = input.valueAsNumber;
+      input.setCustomValidity("");
+      const region = regionState.regions[regionState.index];
+      if (input.validity.valid && Number.isFinite(degrees)) region.angle = degrees * Math.PI / 180;
+      else if (!input.value && !input.validity.badInput) delete region.angle;
+      else input.setCustomValidity("Введите наклон от −180 до 180 градусов.");
+      drawRegionBoxes();
+      clearRegionPreview();
+    });
+    byId("region-delete").addEventListener("click", () => {
+      const {regions, index} = regionState;
+      regions.splice(index, 1);
+      regionState.index = Math.max(0, Math.min(index, regions.length - 1));
+      clearRegionPreview();
+      renderRegionEditor();
+    });
+    byId("region-language").addEventListener("change", clearRegionPreview);
+    byId("region-fields").addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault();
+    });
+    regionCue.addEventListener("change", loadRegions);
+    byId("regions").addEventListener("toggle", (event) => {
+      if (event.target.open && !regionState) loadRegions();
+    });
+
+    async function submitRegions(mode) {
+      const current = project;
+      const state = regionState;
+      if (!current || !state || active || loading || byId("region-editor").disabled) return;
+      const regions = mode === "restore" ? null : state.regions;
+      if (regions?.some(({text}) => !text.trim() || /[^ -~]/.test(text))) {
+        message(regionMessage, "Укажите текст с кадра английскими буквами и цифрами для каждой области.", true);
+        return;
+      }
+      if (regions?.length && !byId("region-angle").reportValidity()) return;
+      const body = {path: current.path, cue: state.cue, regions};
+      const options = {method: "POST", headers: {"Content-Type": "application/json"}};
+      byId("region-editor").disabled = true;
+      message(regionMessage, mode === "preview" ? "Готовим кадр с переводом…" : "Сохраняем разметку…");
+      try {
+        if (mode === "preview") {
+          body.language = byId("region-language").value;
+          const response = await fetch("/api/project/regions/preview", {...options, body: JSON.stringify(body)});
+          if (!response.ok) throw new Error((await response.json()).error || "Не удалось показать перевод.");
+          const frame = await response.blob();
+          if (project !== current || regionState !== state) return;
+          clearRegionPreview();
+          regionPreviewUrl = URL.createObjectURL(frame);
+          regionPreview.src = regionPreviewUrl;
+          regionPreview.hidden = false;
+          message(regionMessage, "Предпросмотр перевода готов.");
+        } else {
+          const saved = await api("/api/project/regions", {...options, body: JSON.stringify(body)});
+          if (project !== current || regionState !== state) return;
+          resetReadability();
+          resetDiagnostics();
+          state.manual = saved.regions !== null;
+          state.regions = saved.regions || [];
+          state.index = Math.max(0, Math.min(state.index, state.regions.length - 1));
+          clearRegionPreview();
+          renderRegionEditor();
+          message(regionMessage, state.manual ? "Ручная разметка сохранена."
+            : state.ocr_marked ? "Ручная разметка снята. Доступно OCR." : "Ручная разметка снята.");
+          const refreshed = await api("/api/project?" + new URLSearchParams({path: current.path}));
+          if (project === current) {
+            current.issues = refreshed.issues;
+            renderReadiness();
+          }
+        }
+      } catch (error) {
+        if (project === current && regionState === state) message(regionMessage, error.message, true);
+      } finally {
+        if (project === current && regionState === state) byId("region-editor").disabled = false;
+      }
+    }
+
+    byId("region-preview").addEventListener("click", () => submitRegions("preview"));
+    byId("region-save").addEventListener("click", () => submitRegions("save"));
+    byId("region-restore").addEventListener("click", () => submitRegions("restore"));
+
+    const comparisonBefore = byId("comparison-before");
+    const comparisonAfter = byId("comparison-after");
+    const comparisonButton = byId("comparison-run");
+    const comparisonLoad = byId("comparison-load");
+    const comparisonMessage = byId("comparison-message");
+    const qualityKeys = ["min_shot_seconds", "max_shot_seconds", "min_cut_seconds", "max_cut_seconds", "art_language"];
+    const qualityInputs = qualityKeys.map((key) => byId("quality-" + key));
+    let qualityLoaded = false;
+    let qualityBusy = false;
+
+    function clearComparison() {
+      byId("comparison-results").replaceChildren();
+      byId("comparison-details").hidden = true;
+      byId("comparison-json").value = "";
+      message(comparisonMessage);
+      comparisonButton.disabled = !comparisonBefore.value || !comparisonAfter.value ||
+        comparisonBefore.value === comparisonAfter.value;
+    }
+
+    function resetProjectProfiles() {
+      for (const select of [comparisonBefore, comparisonAfter]) {
+        select.replaceChildren();
+        select.disabled = true;
+      }
+      comparisonLoad.disabled = false;
+      clearComparison();
+      qualityLoaded = false;
+      qualityBusy = false;
+      for (const input of qualityInputs) input.value = "";
+      byId("quality-warnings").replaceChildren();
+      message(byId("quality-message"));
+    }
+
+    comparisonLoad.addEventListener("click", async () => {
+      const current = project;
+      if (!current) return;
+      for (const select of [comparisonBefore, comparisonAfter]) select.replaceChildren();
+      clearComparison();
+      comparisonLoad.disabled = true;
+      message(comparisonMessage, "Загружаем историю сборок…");
+      try {
+        const {builds} = await api("/api/project/builds?" + new URLSearchParams({path: current.path}));
+        if (project !== current) return;
+        for (const select of [comparisonBefore, comparisonAfter]) {
+          select.replaceChildren(...builds.map(({id, created_at}) => {
+            const date = new Date(created_at);
+            const label = created_at && (Number.isNaN(date.getTime()) ? created_at : date.toLocaleString("ru"));
+            return new Option(label ? label + " · " + id : id, id);
+          }));
+          select.disabled = builds.length < 2;
+        }
+        if (builds.length > 1) comparisonBefore.selectedIndex = 1;
+        clearComparison();
+        if (builds.length < 2) message(comparisonMessage, "Для сравнения нужны две сохранённые сборки.");
+      } catch (error) {
+        if (project === current) message(comparisonMessage, error.message, true);
+      } finally {
+        if (project === current) comparisonLoad.disabled = false;
+      }
+    });
+
+    for (const select of [comparisonBefore, comparisonAfter]) select.addEventListener("change", clearComparison);
+    comparisonButton.addEventListener("click", async () => {
+      const current = project;
+      if (!current || comparisonButton.disabled) return;
+      const params = new URLSearchParams({path: current.path, before: comparisonBefore.value, after: comparisonAfter.value});
+      clearComparison();
+      for (const control of [comparisonBefore, comparisonAfter, comparisonButton, comparisonLoad]) control.disabled = true;
+      message(comparisonMessage, "Сравниваем сборки…");
+      try {
+        const report = await api("/api/project/builds/diff?" + params);
+        if (project !== current) return;
+        const {changes, outputs, settings_changed: settingsChanged} = report;
+        const kindLabels = {added: "Добавлен", removed: "Удалён", modified: "Изменён", changed: "Изменён"};
+        const rows = changes.map(({language, cue, occurrence, kind, fields}) => {
+          const names = Array.isArray(fields) ? fields : Object.keys(fields || {});
+          const take = occurrence > 1 ? " (" + occurrence + ")" : "";
+          return (kindLabels[kind] || kind) + " кадр " + cue + take + " · " + languageName(language) +
+            (names.length ? " · " + names.join(", ") : "");
+        });
+        for (const {name} of outputs) rows.push("Изменился выходной файл " + name);
+        if (settingsChanged) rows.unshift("Проверьте настройки сборок в подробном отчёте.");
+        for (const row of rows) {
+          const item = document.createElement("li");
+          item.textContent = row;
+          byId("comparison-results").append(item);
+        }
+        byId("comparison-json").value = JSON.stringify(report, null, 2);
+        byId("comparison-details").hidden = false;
+        message(comparisonMessage, rows.length ? "Сравнение готово." : "Различий нет.");
+      } catch (error) {
+        if (project === current) message(comparisonMessage, error.message, true);
+      } finally {
+        if (project === current) {
+          for (const control of [comparisonBefore, comparisonAfter, comparisonButton, comparisonLoad]) control.disabled = false;
+        }
+      }
+    });
+
+    async function requestQuality(save) {
+      const current = project;
+      if (!current || qualityBusy || loading || active) return;
+      const status = byId("quality-message");
+      let quality;
+      if (save) {
+        if (!qualityInputs.every((input) => input.reportValidity())) return;
+        quality = Object.fromEntries(qualityKeys.map((key, index) => {
+          const input = qualityInputs[index];
+          return [key, input.type === "number" ? input.valueAsNumber : input.value.trim()];
+        }));
+        if (quality.min_shot_seconds > quality.max_shot_seconds || quality.min_cut_seconds > quality.max_cut_seconds) {
+          message(status, "Минимальное значение должно быть не больше максимального.", true);
+          return;
+        }
+      }
+      qualityBusy = true;
+      updateControls();
+      message(status, save ? "Сохраняем профиль…" : "Загружаем профиль…");
+      try {
+        const endpoint = "/api/project/quality";
+        const result = save
+          ? await api(endpoint, {method: "POST", headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({path: current.path, quality})})
+          : await api(endpoint + "?" + new URLSearchParams({path: current.path}));
+        if (project !== current) return;
+        qualityKeys.forEach((key, index) => { qualityInputs[index].value = result.quality[key]; });
+        byId("quality-warnings").replaceChildren(...(result.warnings || []).map((warning) => {
+          const item = document.createElement("li");
+          item.textContent = warning;
+          return item;
+        }));
+        qualityLoaded = true;
+        if (save) resetDiagnostics();
+        message(status, save ? "Профиль сохранён." : "Профиль загружен.");
+      } catch (error) {
+        if (project === current) message(status, error.message, true);
+      } finally {
+        if (project === current) {
+          qualityBusy = false;
+          updateControls();
+        }
+      }
+    }
+
+    byId("quality-load").addEventListener("click", () => requestQuality(false));
+    byId("quality-save").addEventListener("click", () => requestQuality(true));
+
+    async function openProject() {
+      const path = pathInput.value.trim();
+      if (!path || loading || active) return;
+      const previousProject = project?.path;
+      loading = true;
+      byId("continuity-issues").replaceChildren();
+      message(byId("continuity-message"));
+      resetReadability();
+      resetRepeats();
+      resetSubtitles();
+      resetChapters();
+      resetDiagnostics();
+      resetProjectProfiles();
+      resetSoundMap();
+      resetPublicationPackage();
+      byId("pronunciation-editor").hidden = true;
+      clearReplacement();
+      resetSyncAudio();
+      resetRegionEditor();
+      byId("sync-results").replaceChildren();
+      byId("master-compare-results").replaceChildren();
+      resetPreview();
+      project = null;
+      cast = null;
+      library = null;
+      byId("library-items").replaceChildren();
+      byId("library-cue").replaceChildren();
+      if (path !== previousProject) {
+        byId("library-search").value = "";
+        byId("library-kind").value = "";
+      }
+      byId("cast-cards").replaceChildren();
+      byId("cast-scene").replaceChildren();
+      renderReadiness();
+      message(projectMessage, "Читаем проект…");
+      message(actionMessage);
+      renderLanguages();
+      try {
+        project = await api("/api/project?" + new URLSearchParams({path}));
+        diagnosticsLanguage.replaceChildren(new Option("Все языки", ""),
+          ...project.languages.map(({code}) => new Option(languageName(code), code)));
+        byId("region-cue").replaceChildren(...project.cues.map((cue) => new Option(cue, cue)));
+        byId("region-language").replaceChildren(
+          ...project.languages.map(({code}) => new Option(languageName(code), code)));
+        const translatedLanguage = project.languages.find(({code}) => code !== project.source_language);
+        if (translatedLanguage) byId("region-language").value = translatedLanguage.code;
+        Object.setPrototypeOf(project.montage, null);
+        byId("montage-cue").replaceChildren(...project.cues.map((cue) => new Option(cue, cue)));
+        showMontageRule();
+        if (project.path !== previousProject) {
+          byId("export-scope").value = "";
+          byId("resume-enabled").checked = true;
+          byId("mix-enabled").checked = false;
+          byId("mix-music").value = "";
+          byId("mix-ambience").value = "";
+          byId("mix-sound-map").checked = false;
+          updateMixFields();
+        }
+        for (const [id, values] of [["export-chapter", project.chapters], ["cue-start", project.cues], ["cue-end", project.cues]]) {
+          const control = byId(id);
+          const previous = control.value;
+          control.replaceChildren(new Option("Выберите", ""), ...values.map((value) => new Option(value, value)));
+          if (project.path === previousProject && values.includes(previous)) control.value = previous;
+        }
+        updateExportScope();
+        const importLanguage = byId("import-language");
+        const previousLanguage = importLanguage.value;
+        importLanguage.replaceChildren(...project.languages.map(({code}) => new Option(languageName(code), code)));
+        if (project.path === previousProject && project.languages.some(({code}) => code === previousLanguage)) {
+          importLanguage.value = previousLanguage;
+        } else if (project.languages.some(({code}) => code === project.source_language)) {
+          importLanguage.value = project.source_language;
+          byId("import-manifest").value = "";
+          byId("import-replace").checked = false;
+          message(byId("import-message"));
+        }
+        pathInput.value = project.path;
+        const known = [...projects.options].some((item) => item.value === project.path);
+        projects.value = known ? project.path : "";
+        selected.clear();
+        const ready = project.languages.filter((item) => item.ready);
+        const readabilityLanguage = byId("readability-language");
+        readabilityLanguage.replaceChildren(...ready.map(({code}) => new Option(languageName(code), code)));
+        if (ready.some(({code}) => code === project.source_language)) readabilityLanguage.value = project.source_language;
+        repeatsLanguage.replaceChildren(...ready.map(({code}) => new Option(languageName(code), code)));
+        repeatsLanguage.value = readabilityLanguage.value;
+        subtitlesLanguage.replaceChildren(...ready.map(({code}) => new Option(languageName(code), code)));
+        subtitlesLanguage.value = readabilityLanguage.value;
+        subtitlesMaster.value = "";
+        updateSubtitleMasters();
+        chaptersMaster.replaceChildren(...ready.map(({code}) => new Option(languageName(code), code)));
+        chaptersMaster.value = readabilityLanguage.value;
+        chaptersLanguage.replaceChildren(...project.languages.map(({code}) => new Option(languageName(code), code)));
+        chaptersLanguage.value = project.source_language || chaptersMaster.value;
+        const replacementLanguage = byId("replace-language");
+        const pronunciationLanguage = byId("pronunciation-language");
+        pronunciationLanguage.replaceChildren(...project.languages.map(({code}) => new Option(languageName(code), code)));
+        if (project.source_language) pronunciationLanguage.value = project.source_language;
+        if (byId("pronunciation").open) loadPronunciation();
+        replacementLanguage.replaceChildren(...ready.map(({code}) => new Option(languageName(code), code)));
+        if (ready.some(({code}) => code === project.source_language)) replacementLanguage.value = project.source_language;
+        const previewLanguage = byId("preview-language");
+        previewLanguage.replaceChildren(...ready.map(({code}) => new Option(languageName(code), code)));
+        if (ready.some(({code}) => code === project.source_language)) previewLanguage.value = project.source_language;
+        byId("preview-load").disabled = !previewLanguage.value;
+        for (const {code} of ready) selected.add(code);
+        masterLanguage.replaceChildren(...ready.map(({code}) => new Option(languageName(code), code)));
+        if (ready.some((item) => item.code === project.source_language)) {
+          masterLanguage.value = project.source_language;
+        }
+        const youtube = ready.length > 0;
+        form.querySelector(`input[name=mode][value=${youtube ? "youtube" : "separate"}]`).checked = true;
+        message(projectMessage, `${project.name}. Готово языков: ${ready.length} из ${project.languages.length}.`);
+      } catch (error) {
+        message(projectMessage, error.status ? error.message : "Не удалось прочитать проект. Проверьте, что сервер запущен.", true);
+      } finally {
+        loading = false;
+        renderReadiness();
+        renderLanguages();
+        if (byId("cast").open) loadCast();
+        if (byId("library").open) loadLibrary();
+        if (byId("regions").open) loadRegions();
+      }
+    }
+
+    function addOutput(output, target = outputs) {
+      const row = document.createElement("li");
+      const link = document.createElement("a");
+      link.textContent = output.path.split(/[\\/]/).pop();
+      link.href = output.url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      const path = document.createElement("code");
+      path.textContent = output.path;
+      row.append(link, path);
+      if (navigator.clipboard) {
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.textContent = "Скопировать путь";
+        copy.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(output.path);
+            copy.textContent = "Путь скопирован";
+          } catch {
+            copy.textContent = "Выделите путь вручную";
+          }
+        });
+        row.append(copy);
+      }
+      target.append(row);
+    }
+
+    let retryPayload = null;
+
+    function showJob(job) {
+      status.dataset.state = job.status;
+      status.textContent = stateLabels[job.status] || job.status;
+      byId("queue-selected").textContent = [job.path, jobKind(job)].filter(Boolean).join(" · ");
+      retryPayload = job.status === "failed" && job.command === "build" ? job.retry_payload : null;
+      byId("job-retry").hidden = !retryPayload;
+      const contents = job.log || "Журнал появится после запуска задания.";
+      if (log.textContent !== contents) {
+        log.textContent = contents;
+        log.scrollTop = log.scrollHeight;
+      }
+      const issues = job.issues || [];
+      byId("job-diagnostics").hidden = !issues.length;
+      renderDiagnosticIssues(byId("job-diagnostics-issues"), issues);
+      outputs.replaceChildren();
+      for (const output of job.outputs || []) addOutput(output);
+      if (job.outputs?.length) {
+        resultsHint.textContent = "Нажмите имя файла, чтобы открыть его.";
+      } else if (job.status === "queued" || job.status === "running") {
+        resultsHint.textContent = "Результаты появятся после завершения задания.";
+      } else if (job.status === "failed") {
+        resultsHint.textContent = "Посмотрите журнал, чтобы найти причину ошибки.";
+      } else {
+        resultsHint.textContent = job.dry_run
+          ? "Проверка завершена. Можно запускать сборку."
+          : job.command === "scan"
+            ? "Распознавание завершено. Теперь можно собрать видео."
+            : "Сборка завершена. Движок не вернул список файлов.";
+      }
+    }
+
+    function jobKind(job) {
+      if (job.command === "scan") return "Распознавание";
+      return job.dry_run ? "Проверка" : "Экспорт";
+    }
+
+    function markSelectedJob() {
+      for (const button of byId("queue-jobs").querySelectorAll("button")) {
+        button.setAttribute("aria-pressed", String(button.dataset.jobId === selectedJob));
+      }
+    }
+
+    async function selectJob(id, initial = null) {
+      if (id !== selectedJob) {
+        retryPayload = null;
+        byId("job-retry").hidden = true;
+        byId("job-retry-message").hidden = true;
+        message(byId("job-retry-message"));
+      }
+      selectedJob = id;
+      markSelectedJob();
+      const request = ++selectedJobRequest;
+      if (initial) {
+        showJob(initial);
+        return;
+      }
+      try {
+        const job = await api("/api/jobs/" + encodeURIComponent(id));
+        if (request === selectedJobRequest) showJob(job);
+      } catch (error) {
+        if (request === selectedJobRequest) {
+          message(byId("queue-message"), error.status ? error.message : "Журнал задания недоступен.", true);
+        }
+      }
+    }
+
+    async function refreshQueue() {
+      if (queueUpdating) return;
+      queueUpdating = true;
+      const feedback = byId("queue-message");
+      try {
+        const {jobs} = await api("/api/jobs");
+        const snapshot = JSON.stringify(jobs);
+        if (snapshot !== queueSnapshot) {
+          const list = byId("queue-jobs");
+          const focused = list.contains(document.activeElement) ? document.activeElement.dataset.jobId : null;
+          list.replaceChildren(...jobs.map((job) => {
+            const row = document.createElement("li");
+            const button = document.createElement("button");
+            button.type = "button";
+            button.dataset.jobId = job.id;
+            const place = job.queue_position ? ` · №${job.queue_position}` : "";
+            button.textContent = `${job.path} · ${jobKind(job)} · ${stateLabels[job.status] || job.status}${place}`;
+            button.addEventListener("click", () => selectJob(job.id));
+            row.append(button);
+            return row;
+          }));
+          markSelectedJob();
+          if (focused) [...list.querySelectorAll("button")].find((button) => button.dataset.jobId === focused)?.focus();
+          queueSnapshot = snapshot;
+        }
+        const waiting = jobs.filter(({status}) => status === "queued").length;
+        const running = jobs.filter(({status}) => status === "running").length;
+        message(feedback, jobs.length ? `В работе: ${running}. В очереди: ${waiting}.` : "Заданий пока нет.");
+        const selected = jobs.find(({id}) => id === selectedJob);
+        if (selected) {
+          if (selected.status !== status.dataset.state || ["queued", "running"].includes(selected.status)) {
+            await selectJob(selected.id);
+          }
+        } else if (!selectedJob && jobs.length) {
+          await selectJob((jobs.find(({status}) => status === "running") || jobs[0]).id);
+        }
+      } catch {
+        message(feedback, "Не удалось обновить очередь. Повторяем запрос.", true);
+      } finally {
+        queueUpdating = false;
+      }
+    }
+
+    function updateExportScope() {
+      const scope = byId("export-scope").value;
+      byId("export-chapter-field").hidden = scope !== "chapter";
+      byId("export-range-field").hidden = scope !== "range";
+    }
+    byId("export-scope").addEventListener("change", updateExportScope);
+
+    function updateMixFields() {
+      byId("mix-fields").hidden = !byId("mix-enabled").checked;
+      if (byId("mix-fields").hidden) resetSoundMap();
+      updateControls();
+    }
+    byId("mix-enabled").addEventListener("change", updateMixFields);
+
+    let soundMapLanguage = null;
+    let soundMapRequest = 0;
+    let soundMapLoading = false;
+    const soundMapButton = byId("sound-map-check");
+    const soundMapMessage = byId("sound-map-message");
+    const soundMapSegments = byId("sound-map-segments");
+
+    function resetSoundMap() {
+      soundMapRequest++;
+      soundMapLoading = false;
+      soundMapSegments.replaceChildren();
+      soundMapSegments.hidden = true;
+      message(soundMapMessage);
+    }
+
+    function updateSoundMapControls(loaded, disabled) {
+      let language = null;
+      if (loaded && modeIsYouTube()) language = masterLanguage.value || null;
+      if (loaded && !modeIsYouTube()) {
+        const ready = project.languages.filter(({code, ready}) => ready && selected.has(code));
+        language = (ready.find(({code}) => code === project.source_language) || ready[0])?.code || null;
+      }
+      if (language !== soundMapLanguage) {
+        soundMapLanguage = language;
+        resetSoundMap();
+      }
+      soundMapButton.disabled = disabled || soundMapLoading || !language || !byId("mix-enabled").checked;
+    }
+
+    soundMapButton.addEventListener("click", async () => {
+      const current = project;
+      const language = soundMapLanguage;
+      if (!current || !language || soundMapButton.disabled) return;
+      resetSoundMap();
+      const request = soundMapRequest;
+      const isCurrent = () => project === current && request === soundMapRequest;
+      soundMapLoading = true;
+      updateControls();
+      message(soundMapMessage, "Проверяем звуковую карту…");
+      try {
+        const params = new URLSearchParams({path: current.path, language});
+        const report = await api("/api/project/sound-map?" + params);
+        if (!isCurrent()) return;
+        if (!report.configured) {
+          message(soundMapMessage, "Для проекта ещё нет файла sound-map.json.");
+          return;
+        }
+        message(soundMapMessage, `Весь тайминг · ${languageName(report.language)} · Фон задан для ${report.covered_shots} из ${report.total_shots} отрезков.`);
+        for (const {location, start, end, audio} of report.segments) {
+          const row = document.createElement("li");
+          row.textContent = `${start.toFixed(2)}–${end.toFixed(2)} с · ${location} · ${audio}`;
+          soundMapSegments.append(row);
+        }
+        soundMapSegments.hidden = !report.segments.length;
+      } catch (error) {
+        if (isCurrent()) message(soundMapMessage, error.message, true);
+      } finally {
+        if (isCurrent()) {
+          soundMapLoading = false;
+          updateControls();
+        }
+      }
+    });
+
+    function exportFragment() {
+      const scope = byId("export-scope").value;
+      if (scope === "chapter") {
+        const chapter = byId("export-chapter").value;
+        if (!chapter) throw new Error("Выберите главу.");
+        return {chapter};
+      }
+      if (scope === "range") {
+        const first = byId("cue-start");
+        const last = byId("cue-end");
+        if (first.selectedIndex < 1 || last.selectedIndex < first.selectedIndex) {
+          throw new Error("Выберите первый и последний кадр по порядку.");
+        }
+        return {cue_start: first.value, cue_end: last.value};
+      }
+      return {};
+    }
+
+    const sourceAudio = byId("sync-source-audio");
+    const adjustedAudio = byId("sync-adjusted-audio");
+    let syncAudioRequest = null;
+    sourceAudio.addEventListener("play", () => adjustedAudio.pause());
+    adjustedAudio.addEventListener("play", () => sourceAudio.pause());
+
+    function resetSyncAudio() {
+      syncAudioRequest?.abort();
+      for (const audio of [sourceAudio, adjustedAudio]) {
+        audio.pause();
+        if (audio.src.startsWith("blob:")) URL.revokeObjectURL(audio.src);
+        audio.removeAttribute("src");
+        audio.load();
+      }
+      byId("sync-listen").hidden = true;
+    }
+
+    async function listenToBlock(path, master, language, block) {
+      resetSyncAudio();
+      const request = new AbortController();
+      syncAudioRequest = request;
+      const panel = byId("sync-listen");
+      const feedback = byId("sync-listen-message");
+      panel.hidden = false;
+      byId("sync-listen-title").textContent = languageName(language) + " · " + block.id;
+      byId("sync-adjusted").hidden = block.status === "out_of_range";
+      panel.scrollIntoView({block: "nearest"});
+      message(feedback, "Готовим фрагменты…");
+      async function loadAudio(version, player) {
+        const params = new URLSearchParams({path, master_language: master, language, block: block.id, version});
+        const response = await fetch("/api/project/sync/audio?" + params, {signal: request.signal});
+        if (!response.ok) throw new Error((await response.json()).error);
+        const audio = await response.blob();
+        if (!request.signal.aborted) player.src = URL.createObjectURL(audio);
+      }
+      try {
+        const downloads = [loadAudio("source", sourceAudio)];
+        if (block.status !== "out_of_range") downloads.push(loadAudio("adjusted", adjustedAudio));
+        await Promise.all(downloads);
+        if (!request.signal.aborted) message(feedback, block.status === "out_of_range"
+          ? "Этот темп выходит за пределы 0,5–2×. Доступен исходный блок." : "");
+      } catch (error) {
+        if (!request.signal.aborted) message(feedback, error.message, true);
+      }
+    }
+
+    function showSyncReport(report, path) {
+      const results = byId("sync-results");
+      const statuses = {ok: "В норме", noticeable: "Изменение >20%", out_of_range: "Нужна переозвучка", missing: "Нет блока"};
+      for (const edition of report.languages) {
+        const title = document.createElement("h3");
+        title.textContent = languageName(edition.language) + (edition.ready ? " · готово" : " · требуется правка");
+        results.append(title);
+        for (const issue of edition.issues) {
+          const warning = document.createElement("p");
+          warning.textContent = issue.message || "Не совпадает порядок или состав блоков."
+            + (issue.missing.length ? " Нет: " + issue.missing.join(", ") : "")
+            + (issue.extra.length ? " Лишние: " + issue.extra.join(", ") : "");
+          results.append(warning);
+        }
+        if (!edition.blocks.length) continue;
+        const wrapper = document.createElement("div");
+        wrapper.style.overflowX = "auto";
+        const table = document.createElement("table");
+        const heading = table.createTHead().insertRow();
+        for (const text of ["Блок", "Исходная, с", "Целевая, с", "Темп", "Статус", "Озвучка"]) {
+          const cell = document.createElement("th");
+          cell.scope = "col";
+          cell.textContent = text;
+          heading.append(cell);
+        }
+        const body = table.createTBody();
+        for (const block of edition.blocks) {
+          const row = body.insertRow();
+          for (const text of [block.id, block.source_duration?.toFixed(2) ?? "–",
+            block.target_duration.toFixed(2), block.tempo == null ? "–" : block.tempo.toFixed(2) + "×",
+            statuses[block.status]]) row.insertCell().textContent = text;
+          const action = row.insertCell();
+          if (block.status !== "missing") {
+            const listen = document.createElement("button");
+            listen.type = "button";
+            listen.textContent = block.status === "out_of_range" ? "Исходник" : "Сравнить";
+            listen.setAttribute("aria-label", listen.textContent + " " + block.id);
+            listen.addEventListener("click", () => listenToBlock(path, report.master_language, edition.language, block));
+            action.append(listen);
+          }
+        }
+        wrapper.append(table);
+        results.append(wrapper);
+      }
+    }
+
+    byId("sync-check").addEventListener("click", async () => {
+      const current = project;
+      const feedback = byId("sync-message");
+      const button = byId("sync-check");
+      const master = masterLanguage.value;
+      byId("sync-results").replaceChildren();
+      resetSyncAudio();
+      if (!current || !master || loading) return;
+      const languages = [...selected].filter((code) => code !== master);
+      if (!languages.length) return message(feedback, "Выберите хотя бы один дубляж.", true);
+      button.disabled = true;
+      try {
+        const params = new URLSearchParams({path: current.path, master_language: master, ...exportFragment()});
+        for (const language of languages) params.append("language", language);
+        message(feedback, "Проверяем озвучку и рассчитываем темп…");
+        const report = await api("/api/project/sync?" + params);
+        if (current !== project) return;
+        message(feedback, `Основной язык: ${languageName(master)}. Длительность: ${report.duration.toFixed(2)} с.`);
+        showSyncReport(report, current.path);
+      } catch (error) {
+        if (current === project) message(feedback, error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    byId("sync-compare").addEventListener("click", async () => {
+      const current = project;
+      const feedback = byId("master-compare-message");
+      const results = byId("master-compare-results");
+      const button = byId("sync-compare");
+      const codes = new Set([...selected, masterLanguage.value]);
+      results.replaceChildren();
+      if (!current || loading || !masterLanguage.value) return;
+      if (codes.size < 2) return message(feedback, "Выберите хотя бы один дубляж для сравнения.", true);
+      button.disabled = true;
+      try {
+        const params = new URLSearchParams({path: current.path, ...exportFragment()});
+        for (const code of codes) params.append("language", code);
+        message(feedback, "Сравниваем тайминги…");
+        const report = await api("/api/project/sync/masters?" + params);
+        if (current !== project) return;
+        message(feedback, report.recommended
+          ? "По темпу лучше подходит: " + languageName(report.recommended)
+          : "Каждый вариант требует исправлений перед сборкой.");
+        for (const row of report.candidates) {
+          const item = document.createElement("li");
+          const duration = row.duration == null ? "нет тайминга" : row.duration.toFixed(2) + " с";
+          const mean = row.mean_tempo_change == null ? "–" : (100 * row.mean_tempo_change).toFixed(1) + "%";
+          item.textContent = `${languageName(row.language)} · ${duration} · заметных изменений: ${row.noticeable_blocks} · за пределами 0,5–2×: ${row.out_of_range_blocks} · среднее изменение: ${mean}`;
+          for (const issue of row.issues) {
+            const warning = document.createElement("div");
+            warning.textContent = languageName(issue.language) + ": "
+              + (issue.message || "Не совпадает порядок или состав блоков.");
+            item.append(warning);
+          }
+          if (row.ready) {
+            const apply = document.createElement("button");
+            apply.type = "button";
+            apply.textContent = "Выбрать";
+            apply.addEventListener("click", () => {
+              if (current !== project || active || loading) return;
+              selected.add(masterLanguage.value);
+              masterLanguage.value = row.language;
+              resetPublicationPackage();
+              renderLanguages();
+              byId("sync-results").replaceChildren();
+              resetSyncAudio();
+              message(byId("sync-message"));
+              message(feedback, "Основной язык: " + languageName(row.language));
+            });
+            item.append(" ", apply);
+          }
+          results.append(item);
+        }
+      } catch (error) {
+        if (current === project) message(feedback, error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    function editionRequest(scan, dryRun) {
+      const youtube = !scan && modeIsYouTube();
+      const languages = scan ? [] : [...selected].filter((code) => !youtube || code !== masterLanguage.value);
+      // Include the master so a master-only selection is explicit.
+      if (youtube) languages.unshift(masterLanguage.value);
+      const request = {
+        path: project.path, command: scan ? "scan" : "build", languages, youtube,
+        resolution: settings().get("resolution"), dry_run: dryRun
+      };
+      if (youtube) request.master_language = masterLanguage.value;
+      if (!scan) {
+        request.aspect = settings().get("aspect");
+        Object.assign(request, exportFragment());
+        if (byId("mix-enabled").checked) {
+          request.mix = true;
+          if (byId("mix-sound-map").checked) request.sound_map = true;
+          const music = byId("mix-music").value.trim();
+          const ambience = byId("mix-ambience").value.trim();
+          if (music) request.music = music;
+          if (ambience) request.ambience = ambience;
+        }
+      }
+      return request;
+    }
+
+    let packageRequest = 0;
+    const packageMessage = byId("package-message");
+    const packageFolder = byId("package-folder");
+    const packageIssues = byId("package-issues");
+    const packageOutputs = byId("package-outputs");
+
+    function resetPublicationPackage() {
+      packageRequest++;
+      message(packageMessage);
+      packageFolder.hidden = true;
+      packageFolder.textContent = "";
+      packageIssues.replaceChildren();
+      packageOutputs.replaceChildren();
+    }
+
+    async function publicationPackage(dryRun) {
+      if (active || loading || !project || pathInput.value.trim() !== project.path) return;
+      resetPublicationPackage();
+      let request;
+      try {
+        request = editionRequest(false, dryRun);
+      } catch (error) {
+        return message(packageMessage, error.message, true);
+      }
+      if (!request.languages.length) return;
+      const current = project;
+      const generation = packageRequest;
+      const isCurrent = () => current === project && generation === packageRequest;
+      active = true;
+      renderLanguages();
+      message(packageMessage, dryRun ? "Проверяем комплект…" : "Собираем пакет…");
+      try {
+        const report = await api("/api/project/package", {
+          method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(request)
+        });
+        if (!isCurrent()) return;
+        for (const issue of report.issues || []) {
+          const row = document.createElement("li");
+          row.textContent = [issue.language && languageName(issue.language), issue.message || issue.code]
+            .filter(Boolean).join(" · ");
+          packageIssues.append(row);
+        }
+        for (const output of report.outputs || []) addOutput(output, packageOutputs);
+        if (report.folder) {
+          packageFolder.textContent = report.folder;
+          packageFolder.hidden = false;
+        }
+        const feedback = report.folder ? "Пакет собран." : report.ready
+          ? "Комплект готов к упаковке." : "Проверьте замечания к комплекту.";
+        message(packageMessage, feedback, !report.ready && !report.folder);
+      } catch (error) {
+        if (isCurrent()) message(packageMessage, error.message, true);
+      } finally {
+        active = false;
+        renderLanguages();
+      }
+    }
+
+    for (const [id, dryRun] of [["package-check", true], ["package-build", false]]) {
+      byId(id).addEventListener("click", () => publicationPackage(dryRun));
+    }
+    const packageSettings = "#path, #languages input, #master-language, [name=mode], [name=resolution], " +
+      "#export-scope, #export-aspect, #export-chapter, #cue-start, #cue-end, " +
+      "#mix-enabled, #mix-music, #mix-ambience, #mix-sound-map";
+    form.addEventListener("change", (event) => {
+      if (event.target.matches(packageSettings)) resetPublicationPackage();
+    });
+    byId("select-ready").addEventListener("click", resetPublicationPackage);
+
+    async function submitEdition(request, feedback) {
+      active = true;
+      feedback.hidden = false;
+      message(feedback, "Отправляем задание…");
+      renderLanguages();
+      try {
+        const job = await api("/api/jobs", {
+          method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(request)
+        });
+        await selectJob(job.id, {...request, ...job});
+        message(feedback, "Задание принято. Статус виден в очереди сборок.");
+        feedback.hidden = false;
+        refreshQueue();
+      } catch (error) {
+        message(feedback, error.status ? error.message : "Не удалось отправить задание. Проверьте сервер.", true);
+      } finally {
+        active = false;
+        renderLanguages();
+      }
+    }
+
+    async function start(kind) {
+      if (active || loading || !project || pathInput.value.trim() !== project.path) return;
+      let request;
+      try {
+        request = editionRequest(kind === "scan", kind === "check");
+      } catch (error) {
+        return message(actionMessage, error.message, true);
+      }
+      if (request.command === "build") {
+        if (!request.languages.length) return;
+        if (request.command === "build") request.resume = byId("resume-enabled").checked;
+      }
+      if (kind === "build") resetPublicationPackage();
+      await submitEdition(request, actionMessage);
+    }
+
+    byId("job-retry").addEventListener("click", () => {
+      if (active || loading || !retryPayload) return;
+      resetPublicationPackage();
+      submitEdition({...retryPayload, resume: true}, byId("job-retry-message"));
+    });
+
+    async function initialize() {
+      refreshQueue();
+      setInterval(refreshQueue, 1250);
+      api("/api/health").then((health) => {
+        if (!health.ready) {
+          const missing = Object.keys(health.tools).filter((name) => !health.tools[name]);
+          byId("engine-health").textContent = "Для сборки добавьте в PATH: " + missing.join(", ");
+        }
+      }).catch(() => {});
+      try {
+        const {projects: entries} = await api("/api/projects");
+        projects.replaceChildren(new Option("Введите путь вручную", ""));
+        for (const item of entries) projects.add(new Option(item.name, item.path));
+        if (entries.length === 1 && !pathInput.value.trim()) {
+          pathInput.value = entries[0].path;
+          await openProject();
+        }
+      } catch {
+        projects.replaceChildren(new Option("Список недоступен", ""));
+        message(projectMessage, "Не удалось получить список проектов. Введите путь вручную.", true);
+      }
+    }
+
+    byId("create-project").addEventListener("click", async () => {
+      if (active || loading) return;
+      const button = byId("create-project");
+      const feedback = byId("create-message");
+      button.disabled = true;
+      message(feedback, "Создаём папки…");
+      try {
+        const created = await api("/api/projects", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            name: byId("new-name").value,
+            slug: byId("new-slug").value.trim(),
+            languages: byId("new-languages").value.split(",").map((code) => code.trim()).filter(Boolean),
+            source_language: byId("new-source").value.trim(),
+          }),
+        });
+        if (![...projects.options].some((item) => item.value === created.path)) {
+          projects.add(new Option(created.name, created.path));
+        }
+        pathInput.value = created.path;
+        await openProject();
+        message(feedback, "Проект создан. Добавьте кадры и WAV по шаблонам в " + created.path);
+      } catch (error) {
+        message(feedback, error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    function addPronunciationRule(rule = {term: "", spoken: "", whole_word: true}) {
+      const row = document.createElement("div");
+      const term = document.createElement("input");
+      term.type = "text";
+      term.maxLength = 160;
+      term.placeholder = "Как написано";
+      term.setAttribute("aria-label", term.placeholder);
+      term.value = rule.term;
+      const spoken = document.createElement("input");
+      spoken.type = "text";
+      spoken.maxLength = 160;
+      spoken.placeholder = "Как произнести";
+      spoken.setAttribute("aria-label", spoken.placeholder);
+      spoken.value = rule.spoken;
+      const label = document.createElement("label");
+      const whole = document.createElement("input");
+      whole.type = "checkbox";
+      whole.checked = rule.whole_word;
+      label.append(whole, " Только целое слово или фраза");
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "Убрать правило";
+      remove.addEventListener("click", () => row.remove());
+      row.append(term, spoken, label, remove);
+      byId("pronunciation-rules").append(row);
+    }
+
+    let pronunciationRequest = 0;
+    async function loadPronunciation() {
+      if (!project || !byId("pronunciation-language").value) return;
+      const request = ++pronunciationRequest;
+      const current = project;
+      const editor = byId("pronunciation-editor");
+      const feedback = byId("pronunciation-message");
+      const language = byId("pronunciation-language").value;
+      const params = new URLSearchParams({path: current.path, language});
+      editor.hidden = true;
+      message(feedback, "Читаем словарь…");
+      try {
+        const data = await api("/api/narration/pronunciation?" + params);
+        if (project !== current || request !== pronunciationRequest) return;
+        byId("pronunciation-rules").replaceChildren();
+        for (const rule of data.rules) addPronunciationRule(rule);
+        byId("pronunciation-result").textContent = "";
+        const download = byId("pronunciation-export");
+        download.href = "/api/narration/tts?" + params;
+        download.download = `narration-${language}-tts.jsonl`;
+        editor.hidden = false;
+        message(feedback);
+      } catch (error) {
+        if (project === current && request === pronunciationRequest) message(feedback, error.message, true);
+      }
+    }
+
+    async function updatePronunciation(dryRun) {
+      if (!project || byId("pronunciation-editor").hidden || byId("pronunciation-save").disabled) return;
+      const request = pronunciationRequest;
+      const feedback = byId("pronunciation-message");
+      const buttons = [byId("pronunciation-save"), byId("pronunciation-test")];
+      buttons.forEach((button) => { button.disabled = true; });
+      try {
+        const rules = [...byId("pronunciation-rules").children].map((row) => {
+          const [term, spoken, whole] = row.querySelectorAll("input");
+          return {term: term.value, spoken: spoken.value, whole_word: whole.checked};
+        });
+        const current = project;
+        const result = await api("/api/narration/pronunciation", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({path: current.path, language: byId("pronunciation-language").value,
+            rules, sample: byId("pronunciation-sample").value, dry_run: dryRun}),
+        });
+        if (current !== project || request !== pronunciationRequest) return;
+        byId("pronunciation-result").textContent = result.text;
+        message(feedback, dryRun ? "Проверка завершена." : "Словарь сохранён.");
+      } catch (error) {
+        if (request === pronunciationRequest) message(feedback, error.message, true);
+      } finally {
+        buttons.forEach((button) => { button.disabled = false; });
+      }
+    }
+    byId("pronunciation").addEventListener("toggle", () => {
+      if (byId("pronunciation").open && byId("pronunciation-editor").hidden) loadPronunciation();
+    });
+    byId("pronunciation-language").addEventListener("change", loadPronunciation);
+    byId("pronunciation-add").addEventListener("click", () => addPronunciationRule());
+    byId("pronunciation-test").addEventListener("click", () => updatePronunciation(true));
+    byId("pronunciation-save").addEventListener("click", () => updatePronunciation(false));
+
+    let replacement = null;
+    let replacementRequest = 0;
+
+    function clearReplacement() {
+      replacementRequest++;
+      replacement = null;
+      byId("replace-fields").hidden = true;
+      message(byId("replace-message"));
+    }
+
+    byId("replace-language").addEventListener("change", clearReplacement);
+    byId("replace-load").addEventListener("click", async () => {
+      if (!project || loading || active) return;
+      clearReplacement();
+      const request = replacementRequest;
+      const feedback = byId("replace-message");
+      const params = new URLSearchParams({path: project.path, language: byId("replace-language").value});
+      message(feedback, "Читаем список реплик…");
+      try {
+        const data = await api("/api/narration/utterances?" + params);
+        if (request !== replacementRequest) return;
+        replacement = data;
+        byId("replace-row").replaceChildren(...data.rows.map((row) =>
+          new Option(`${row.cue} · ${row.start.toFixed(2)} с${row.text ? " · " + row.text : ""}`, row.index)));
+        byId("replace-fields").hidden = false;
+        message(feedback, data.legacy ? "При первой замене общий WAV будет разбит на клипы. Исходный WAV сохранится." : "");
+      } catch (error) {
+        if (request === replacementRequest) message(feedback, error.message, true);
+      }
+    });
+
+    async function replaceNarration(dryRun) {
+      const button = byId("replace-save");
+      if (!replacement || !project || loading || active || button.disabled) return;
+      const request = replacementRequest;
+      const feedback = byId("replace-message");
+      const buttons = [button, byId("replace-check")];
+      buttons.forEach((control) => { control.disabled = true; });
+      message(feedback, "Проверяем формат WAV и пересчитываем тайминг…");
+      try {
+        const result = await api("/api/narration/replace", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({path: project.path, language: byId("replace-language").value,
+            index: Number(byId("replace-row").value), audio: byId("replace-audio").value.trim(),
+            revision: replacement.revision, dry_run: dryRun}),
+        });
+        if (request !== replacementRequest) return;
+        if (!dryRun) {
+          clearReplacement();
+          resetPreview();
+          resetRepeats();
+          resetChapters();
+          resetDiagnostics();
+          resetSyncAudio();
+          byId("sync-results").replaceChildren();
+          byId("master-compare-results").replaceChildren();
+        }
+        message(feedback, `${dryRun ? "Проверено" : "Реплика заменена"}. Блок ${result.block}: ${result.old_block_duration.toFixed(2)} → ${result.block_duration.toFixed(2)} с. Дорожка: ${result.duration.toFixed(2)} с.`);
+      } catch (error) {
+        if (request === replacementRequest) message(feedback, error.message, true);
+      } finally {
+        buttons.forEach((control) => { control.disabled = false; });
+      }
+    }
+    byId("replace-check").addEventListener("click", () => replaceNarration(true));
+    byId("replace-save").addEventListener("click", () => replaceNarration(false));
+
+    async function importNarration(dryRun) {
+      if (!project || active || loading || byId("import-save").disabled) return;
+      const path = project.path;
+      const feedback = byId("import-message");
+      const buttons = [byId("import-check"), byId("import-save")];
+      buttons.forEach((button) => { button.disabled = true; });
+      byId("import-issues").replaceChildren();
+      message(feedback, "Проверяем список и WAV…");
+      try {
+        const result = await api("/api/narration/import", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            path, language: byId("import-language").value,
+            [byId("import-kind").value]: byId("import-manifest").value.trim(),
+            replace: byId("import-replace").checked, dry_run: dryRun,
+          }),
+        });
+        if (result.issues?.length) {
+          const labels = {
+            ambiguous_wav: "Несколько возможных cue",
+            unmatched_wav: "Файл не сопоставлен",
+            ambiguous_cue: "Несколько файлов для cue",
+            missing_wav: "Нет WAV для cue",
+          };
+          message(feedback, `Совпало реплик: ${result.utterances}. Исправьте замечания перед импортом.`, true);
+          for (const issue of result.issues) {
+            const item = document.createElement("li");
+            const alternatives = (issue.candidates || issue.files || []).join(", ");
+            item.textContent = `${labels[issue.code]}: ${issue.file || issue.cue}${alternatives ? " (" + alternatives + ")" : ""}`;
+            byId("import-issues").append(item);
+          }
+          return;
+        }
+        if (!dryRun && project?.path === path) {
+          await openProject();
+          byId("import-replace").checked = false;
+        }
+        const replacement = result.target_exists ? " Список уже есть. Для замены отметьте флажок." : "";
+        message(feedback, `${dryRun ? "Проверено" : "Импортировано"}. Реплик: ${result.utterances}. Длительность: ${result.duration} с.${replacement}`);
+      } catch (error) {
+        message(feedback, error.message, true);
+      } finally {
+        buttons.forEach((button) => { button.disabled = false; });
+      }
+    }
+    byId("import-kind").addEventListener("change", () => {
+      const folder = byId("import-kind").value === "folder";
+      byId("import-folder-picker").hidden = !folder;
+      byId("import-manifest").placeholder = folder ? "incoming/en" : "incoming/en/utterances.json";
+    });
+    byId("import-folder").addEventListener("change", (event) => {
+      const first = event.target.files[0];
+      if (first?.webkitRelativePath) byId("import-manifest").value = first.webkitRelativePath.split("/")[0];
+      event.target.value = "";
+    });
+    byId("import-folder-picker").addEventListener("dragover", (event) => event.preventDefault());
+    byId("import-folder-picker").addEventListener("drop", (event) => {
+      event.preventDefault();
+      const entries = [...event.dataTransfer.items].map((item) => item.webkitGetAsEntry?.());
+      if (entries.length === 1 && entries[0]?.isDirectory) {
+        byId("import-manifest").value = entries[0].name;
+      } else {
+        message(byId("import-message"), "Перетащите одну папку с WAV.", true);
+      }
+    });
+    byId("import-check").addEventListener("click", () => importNarration(true));
+    byId("import-save").addEventListener("click", () => importNarration(false));
+    byId("load").addEventListener("click", openProject);
+    masterLanguage.addEventListener("change", renderLanguages);
+    projects.addEventListener("change", () => {
+      if (projects.value) {
+        pathInput.value = projects.value;
+        openProject();
+      }
+    });
+    pathInput.addEventListener("input", renderLanguages);
+    pathInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        openProject();
+      }
+    });
+    byId("select-ready").addEventListener("click", () => {
+      for (const item of project.languages) if (item.ready) selected.add(item.code);
+      renderLanguages();
+    });
+    for (const input of form.querySelectorAll("input[name=mode]")) {
+      input.addEventListener("change", renderLanguages);
+    }
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!byId("build").disabled) start("build");
+    });
+    byId("check").addEventListener("click", () => start("check"));
+    byId("scan").addEventListener("click", () => start("scan"));
+    renderLanguages();
+    initialize();
+  </script>
+</body>
+</html>

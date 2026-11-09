@@ -15,6 +15,7 @@ Download media, convert audio, and keep your everyday workflow simple.
 | --- | --- | --- |
 | **[Media Downloader](apps/media-downloader/README.md)** | Download video or audio from websites supported by yt-dlp; download torrents from magnet links and `.torrent` files. | [Guide](apps/media-downloader/README.md) · [Windows downloads](https://github.com/icrafti/CraftTools/releases) |
 | **[Audio Converter](apps/audio-converter/README.md)** | Convert local audio to MP3, WAV, FLAC, M4A/AAC, or OGG/Vorbis. Choose quality, track progress, and cancel safely. | [Guide](apps/audio-converter/README.md) · [Windows downloads](https://github.com/icrafti/CraftTools/releases) |
+| **[Series Engine](apps/series-engine/README.md)** | Assemble illustrated episodes, synchronize dubs, and export multilingual video from a browser UI or local API. | [Source setup](apps/series-engine/README.md) |
 
 ## Portable Windows applications
 
@@ -22,7 +23,7 @@ Download media, convert audio, and keep your everyday workflow simple.
 2. Keep the executable with the supplied `LICENSE`, `ATTRIBUTION.md`, and third-party notices, or download its complete portable ZIP.
 3. Double-click the executable. No application installer or Python installation is needed.
 
-Both interfaces are in English. Audio Converter works offline. Media Downloader
+The two portable applications have English interfaces. Series Engine uses a Russian browser interface and runs from source with Python and FFmpeg. Audio Converter works offline. Media Downloader
 requires internet access and may need an installed Node.js or Deno runtime for
 some websites. Website availability and authentication requirements can change.
 
@@ -47,6 +48,7 @@ Earlier MIT/GPL releases retain their original permissions.
 apps/
   media-downloader/    Python + Tkinter application
   audio-converter/     C# + Windows Forms application
+  series-engine/       Python + FFmpeg with a local browser interface
 .agent/
   scripts/             Build tools
   tests/               Automated checks
