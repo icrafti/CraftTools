@@ -13,11 +13,13 @@ Dependencies:
 import json
 import os
 import queue
+import re
 import shutil
 import sys
 import threading
 import time
 import traceback
+from urllib.parse import parse_qs, urlsplit
 def _initialize_tcl() -> None:
     """Initialize Tcl's executable path before importing Tkinter on Windows."""
     if os.name == "nt":
@@ -35,6 +37,7 @@ import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
 import yt_dlp
+from yt_dlp.networking import Request
 
 # Portable builds keep settings and logs beside the executable.
 APP_DIR = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
@@ -108,7 +111,10 @@ def build_opts(mode: str, outdir: str, progress_hook,
         opts["cookiesfrombrowser"] = (cookies_browser,)
     if player_client:
         opts["extractor_args"] = {"youtube": {"player_client": [player_client]}}
-    if mode == "audio":
+    if mode == "transcript":
+        opts.update(skip_download=True, ignore_no_formats_error=True,
+                    source_address="0.0.0.0", socket_timeout=15)
+    elif mode == "audio":
         opts["format"] = "bestaudio/best"
         opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
@@ -124,6 +130,70 @@ def build_opts(mode: str, outdir: str, progress_hook,
             opts["format"] = "bestvideo*+bestaudio/best"
         opts["merge_output_format"] = "mp4"
     return opts
+
+
+def select_transcript_tracks(info: dict) -> dict:
+    """Choose native tracks, preferring uploaded subtitles over automatic ones."""
+    available = []
+    for field in ("subtitles", "automatic_captions"):
+        tracks = info.get(field) or {}
+        for code, formats in tracks.items():
+            if not re.fullmatch(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*", code) or code == "live_chat":
+                continue
+            for track in formats:
+                if track.get("ext") != "json3" or not track.get("url"):
+                    continue
+                if "tlang" not in parse_qs(urlsplit(track["url"]).query):
+                    available.append((code, track))
+                    break
+
+    selected = {}
+    for language in ("ru", "en"):
+        match = next((track for code, track in available
+                      if code.lower().split("-")[0] == language), None)
+        if match:
+            selected[language] = match
+    if "ru" not in selected:
+        for code, track in available:
+            language = code.lower().split("-")[0]
+            selected.setdefault(language, track)
+    return selected
+
+
+def transcript_text(payload: dict) -> str:
+    """Join caption segments without timestamps or empty display events."""
+    lines = []
+    for event in payload.get("events", []):
+        line = " ".join("".join(seg.get("utf8", "")
+                                for seg in event.get("segs", [])).split())
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def download_transcripts(url: str, opts: dict) -> list[str]:
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        if not ydl.get_info_extractor("Youtube").suitable(url):
+            raise ValueError("Вставьте ссылку на отдельное видео YouTube.")
+        info = ydl.extract_info(url, download=False, ie_key="Youtube")
+        tracks = select_transcript_tracks(info)
+        if not tracks:
+            raise ValueError("У этого видео нет доступных субтитров.")
+
+        base = os.path.splitext(ydl.prepare_filename({**info, "ext": "txt"}))[0]
+        paths = []
+        for language, track in tracks.items():
+            path = f"{base}.{info['id']}.{language}.txt"
+            headers = {**(info.get("http_headers") or {}), **(track.get("http_headers") or {})}
+            with ydl.urlopen(Request(track["url"], headers=headers)) as response:
+                contents = transcript_text(json.load(response))
+            if not contents:
+                raise ValueError(f"Дорожка субтитров {language} не содержит текста.")
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8", newline="\n") as file:
+                file.write(contents + "\n")
+            paths.append(path)
+        return paths
 
 
 def fmt_size(n: float) -> str:
@@ -361,7 +431,11 @@ class DownloaderApp:
         self.seg_audio.pack(side="left")
         self.seg_video = ttk.Button(seg, text="Video (MP4)", style="SegIdle.TButton",
                                     command=lambda: self._set_mode("video"), cursor="hand2")
-        self.seg_video.pack(side="left", padx=(2, 18))
+        self.seg_video.pack(side="left", padx=(2, 0))
+        self.seg_transcript = ttk.Button(
+            seg, text="Скачать расшифровку", style="SegIdle.TButton",
+            command=lambda: self._set_mode("transcript"), cursor="hand2")
+        self.seg_transcript.pack(side="left", padx=(2, 18))
 
         qf = ttk.Frame(seg, style="TFrame")
         qf.pack(side="right")
@@ -427,16 +501,11 @@ class DownloaderApp:
 
     def _set_mode(self, mode: str, save: bool = True) -> None:
         self.mode_var.set(mode)
-        if mode == "video":
-            self.seg_video.configure(style="Seg.TButton")
-            self.seg_audio.configure(style="SegIdle.TButton")
-            self.video_quality_cb.configure(state="readonly")
-            self.audio_format_cb.configure(state="disabled")
-        else:
-            self.seg_audio.configure(style="Seg.TButton")
-            self.seg_video.configure(style="SegIdle.TButton")
-            self.video_quality_cb.configure(state="disabled")
-            self.audio_format_cb.configure(state="readonly")
+        for name, button in (("video", self.seg_video), ("audio", self.seg_audio),
+                             ("transcript", self.seg_transcript)):
+            button.configure(style="Seg.TButton" if mode == name else "SegIdle.TButton")
+        self.video_quality_cb.configure(state="readonly" if mode == "video" else "disabled")
+        self.audio_format_cb.configure(state="readonly" if mode == "audio" else "disabled")
         if save:
             self._save_current_settings()
 
@@ -468,7 +537,8 @@ class DownloaderApp:
             messagebox.showwarning(WINDOW_TITLE, "Paste a video or audio URL.")
             return
         outdir = self.dir_var.get().strip() or DEFAULT_DIR
-        if not find_ffmpeg():
+        mode = self.mode_var.get()
+        if mode != "transcript" and not find_ffmpeg():
             messagebox.showerror(
                 WINDOW_TITLE,
                 "FFmpeg was not found in PATH.\n"
@@ -483,7 +553,7 @@ class DownloaderApp:
         self.download_btn.state(["disabled"])
         threading.Thread(
             target=self.worker,
-            args=(url, self.mode_var.get(), outdir,
+            args=(url, mode, outdir,
                   self.video_quality_var.get(), self.audio_format_var.get(),
                   self.cookies_browser_var.get() if self.cookies_var.get() else None),
             daemon=True).start()
@@ -492,10 +562,11 @@ class DownloaderApp:
                video_quality: str, audio_format: str, cookies_browser: str | None) -> None:
         opts = build_opts(mode, outdir, self.hook_progress, video_quality,
                           audio_format, cookies_browser)
+        download = download_transcripts if mode == "transcript" else self._download
 
         try:
-            paths = self._download(url, opts)
-            self.q.put(("done", paths[0] if paths else outdir))
+            paths = download(url, opts)
+            self.q.put(("done", paths or [outdir]))
         except Exception as exc:
             msg = str(exc).strip().splitlines()[-1][:400]
             low = msg.lower()
@@ -506,8 +577,8 @@ class DownloaderApp:
                                       audio_format, cookies_browser,
                                       player_client="web_embedded")
                 try:
-                    paths = self._download(url, fallback)
-                    self.q.put(("done", paths[0] if paths else outdir))
+                    paths = download(url, fallback)
+                    self.q.put(("done", paths or [outdir]))
                     return
                 except Exception as exc2:
                     msg = str(exc2).strip().splitlines()[-1][:400]
@@ -789,12 +860,15 @@ class DownloaderApp:
                     self.progress["value"] = pct
                     self._set_status(self.status_var, self.status_label, text, "busy")
                 elif kind == "done":
+                    paths = payload[0]
+                    summary = (os.path.basename(paths[0]) if len(paths) == 1
+                               else f"{len(paths)} files")
                     self.progress["value"] = 100
                     self._set_status(self.status_var, self.status_label,
-                                     f"Done: {os.path.basename(str(payload[0]))}", "ok")
+                                     f"Done: {summary}", "ok")
                     self.busy = False
                     self.download_btn.state(["!disabled"])
-                    messagebox.showinfo(WINDOW_TITLE, f"File saved:\n{payload[0]}")
+                    messagebox.showinfo(WINDOW_TITLE, "Saved to:\n" + "\n".join(paths))
                 elif kind == "error":
                     self._set_status(self.status_var, self.status_label,
                                      "An error occurred. See the message for details.", "err")

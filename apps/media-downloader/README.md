@@ -15,6 +15,18 @@ and click **Download**. Pressing Enter in the URL field also starts a download.
 - Playlists are disabled: URLs with playlist parameters download one item.
 - Use **Browse** and **Open folder** to manage the output location.
 
+## YouTube transcripts
+
+Paste a link to a single YouTube video, select **Скачать расшифровку** (Download
+transcript), and click **Download** or press Enter. The app saves one UTF-8 TXT
+file per language without downloading video or audio. FFmpeg is not needed.
+
+The app saves Russian and English when both are available. If there is no
+Russian track, it saves the available original languages. It
+prefers uploaded subtitles and uses YouTube's automatic captions when needed.
+If the video has no captions, the app reports that instead of creating an empty
+file.
+
 If a website needs an authenticated session, you can explicitly enable
 **Browser cookies** and choose a browser. Close that browser before retrying if
 its cookie database is locked. Credentials and cookies are not bundled with this
