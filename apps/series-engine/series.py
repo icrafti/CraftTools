@@ -9,7 +9,9 @@ import subprocess
 import tempfile
 import unicodedata
 import wave
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from fractions import Fraction
+from functools import lru_cache
 from itertools import groupby
 from pathlib import Path
 
@@ -46,6 +48,18 @@ def key(text):
 
 def call(*args, cwd=None):
     return subprocess.check_output(args, cwd=cwd, text=True, encoding="utf-8")
+
+
+@contextmanager
+def staged_artifact(target):
+    # A sibling inherits the output directory's ACL; moving a file from a
+    # private TemporaryDirectory can keep the restrictive ACL on Windows.
+    with tempfile.NamedTemporaryFile(dir=target.parent, suffix=f".pending{target.suffix}", delete=False) as stream:
+        pending = Path(stream.name)
+    try:
+        yield pending
+    finally:
+        pending.unlink(missing_ok=True)
 
 
 def cue(row):
@@ -287,10 +301,10 @@ def sound_map_plan(entries, mapping, window=None):
     ]
 
 
-def render_mix(voice, output, duration, mix, offset, plan):
+def render_mix(voice, output, duration, mix, offset, plan, work=None):
     location_bed = None
     if plan:
-        location_bed = output.with_name("location.wav")
+        location_bed = (work or output.parent) / "location.wav"
         render_location_bed(location_bed, duration, FPS, [
             (start, end, location["audio"], offset_frames) for location, start, end, offset_frames in plan
         ])
@@ -317,8 +331,8 @@ def reuse_output(target):
 
 
 def stage_audio(args, stack, stage, inputs, produce):
-    if args.resume:
-        key = checkpoint_key(args.cache_version, stage, inputs)
+    if args.resume and not args.transient_pcm:
+        key = checkpoint_key(args.cache_versions["mix" if stage == "mixed" else "audio"], stage, inputs)
         return cached_stage(args.cache_directory, stage, key, produce)
     target = Path(stack.enter_context(tempfile.TemporaryDirectory())) / f"{stage}.wav"
     produce(target)
@@ -338,6 +352,30 @@ def slice_audio(audio, entries, window, args, stack):
         "-t", f"{(end-start)/FPS:.2f}", "-map", "0:a:0", "-c:a", "pcm_s16le", str(target)))
 
 
+@lru_cache(maxsize=16384)
+def mp3_timing(clip, version, max_seconds):
+    # The last packet carries the encoder padding. Read one second beyond the
+    # shot limit so an oversized source cannot be mistaken for a complete clip.
+    data = json.loads(call("ffprobe", "-v", "error", "-select_streams", "a:0",
+                           "-read_intervals", f"%+{max_seconds + 1}",
+                           "-show_streams", "-show_packets", "-show_entries",
+                           "stream=codec_name,channels,sample_rate,time_base:packet=duration,side_data_list",
+                           "-of", "json", str(clip)))
+    stream, = data["streams"]
+    if stream["codec_name"] != "mp3":
+        raise ValueError("Expected an MP3 audio stream")
+    rate = int(stream["sample_rate"])
+    packets = data["packets"]
+    samples = sum(int(packet["duration"]) for packet in packets) * Fraction(stream["time_base"]) * rate
+    for packet in packets:
+        for side in packet.get("side_data_list", []):
+            if side["side_data_type"] == "Skip Samples":
+                samples -= side["skip_samples"] + side["discard_padding"]
+    if samples.denominator != 1:
+        raise ValueError("Invalid MP3 sample timing")
+    return (int(stream["channels"]), 2, rate), int(samples)
+
+
 def time_utterances(manifest, audio_path=None, *, rows=None, verify_pcm=False, profile=None):
     if rows is None:
         rows = read(manifest)
@@ -354,36 +392,57 @@ def time_utterances(manifest, audio_path=None, *, rows=None, verify_pcm=False, p
             ):
                 raise ValueError(f"{manifest}: utterance {index} needs cue and audio")
             clip = manifest.parent / row["audio"]
+            is_mp3 = clip.suffix.lower() == ".mp3"
             try:
-                with wave.open(str(clip), "rb") as source:
-                    clip_format = (source.getnchannels(), source.getsampwidth(), source.getframerate())
+                with ExitStack() as reader:
+                    if is_mp3:
+                        stat = clip.stat()
+                        clip_format, decoded_samples = mp3_timing(clip.resolve(),
+                            (stat.st_size, stat.st_mtime_ns, stat.st_ino), maximum / FPS)
+                        samples = row.get("samples", decoded_samples)
+                        if type(samples) is not int or not 0 <= decoded_samples - samples <= 1152:
+                            raise ValueError(f"{clip}: invalid MP3 sample count override")
+                    else:
+                        source = reader.enter_context(wave.open(str(clip), "rb"))
+                        clip_format = (source.getnchannels(), source.getsampwidth(), source.getframerate())
+                        samples = decoded_samples = source.getnframes()
                     channels, width, rate = clip_format
+                    if not 0 < samples * FPS <= maximum * rate:
+                        raise ValueError(f"{clip}: empty or longer than {maximum/FPS:g} seconds for {row['cue']}; split long phrases by cue")
                     if audio_format is None:
                         audio_format = clip_format
                         if audio_path is not None:
                             output = stack.enter_context(wave.open(str(audio_path), "wb"))
                             output.setparams((*audio_format, 0, "NONE", "not compressed"))
                     elif clip_format != audio_format:
-                        raise ValueError(f"{clip}: all clips in a language must use the same PCM format")
-                    samples = source.getnframes()
-                    if not 0 < samples * FPS <= maximum * rate:
-                        raise ValueError(f"{clip}: empty or longer than {maximum/FPS:g} seconds for {row['cue']}; split long phrases by cue")
+                        raise ValueError(f"{clip}: all clips in a language must decode to the same PCM format")
                     # Use absolute frame boundaries so rounding never accumulates across clips.
                     start_sample = (position * rate + FPS - 1) // FPS
                     end = max(position + minimum, ((start_sample + samples - 1) * FPS) // rate + 1)
                     end_sample = (end * rate + FPS - 1) // FPS
                     if audio_path is not None:
-                        pcm = source.readframes(samples)
-                        if len(pcm) != samples * channels * width:
-                            raise ValueError(f"{clip}: truncated WAV data")
+                        if is_mp3:
+                            pcm = subprocess.check_output(["ffmpeg", "-nostdin", "-v", "error", "-xerror",
+                                "-i", str(clip), "-map", "0:a:0", "-f", "s16le", "-c:a", "pcm_s16le", "-"])
+                        else:
+                            pcm = source.readframes(samples)
+                        if len(pcm) != decoded_samples * channels * width:
+                            raise BuildIssue(f"{clip}: decoded sample count differs from its timing",
+                                             "invalid_mp3" if is_mp3 else "invalid_wav", "import_audio",
+                                             row["cue"], clip)
+                        pcm = pcm[:samples * channels * width]
                         silence = b"\x80" if width == 1 else bytes(width)
                         output.writeframesraw(pcm + silence * ((end_sample - start_sample - samples) * channels))
-                    elif verify_pcm:
+                    elif verify_pcm and not is_mp3:
                         source.setpos(samples - 1)
                         if len(source.readframes(1)) != channels * width:
-                            raise ValueError(f"{clip}: truncated WAV data")
+                            raise BuildIssue(f"{clip}: truncated WAV data", "invalid_wav", "import_audio",
+                                             row["cue"], clip)
             except FileNotFoundError as error:
-                raise BuildIssue(f"{clip}: utterance WAV is missing", "missing_wav", "import_audio",
+                raise BuildIssue(f"{clip}: utterance audio is missing", "missing_mp3" if is_mp3 else "missing_wav", "import_audio",
+                                 row["cue"], clip) from error
+            except (subprocess.CalledProcessError, KeyError) as error:
+                raise BuildIssue(f"{clip}: invalid MP3 ({error})", "invalid_mp3", "import_audio",
                                  row["cue"], clip) from error
             except (wave.Error, EOFError) as error:
                 raise BuildIssue(f"{clip}: expected a PCM WAV ({error})", "invalid_wav", "import_audio",
@@ -560,7 +619,8 @@ def build(lang, entries, audio, frames, images, marked, config, ocr, glossary, o
     unique = {name: labels for _, _, name, labels in plans}
     video_key = None
     if args.resume and audio is not None:
-        video_key = checkpoint_key(args.cache_version, resolution, args.aspect, plans, close_plans, vertical_plans,
+        video_key = checkpoint_key(args.cache_versions["video"], args.cache_versions["frames"],
+                                   resolution, args.aspect, plans, close_plans, vertical_plans,
                                    {name: images[name] for name in unique}, audio,
                                    Path(font) if any(unique.values()) else None)
         if current(output_video, video_key):
@@ -575,7 +635,7 @@ def build(lang, entries, audio, frames, images, marked, config, ocr, glossary, o
 
     def prepare(name):
         labels = unique[name]
-        path = localize(images[name], labels, font if labels else "", shared, args.cache_version)
+        path = localize(images[name], labels, font if labels else "", shared, args.cache_versions.get("frames"))
         target = work / path.name
         if not target.exists() or (args.resume and checkpoint_key(target) != checkpoint_key(path)):
             target.write_bytes(path.read_bytes())
@@ -627,10 +687,14 @@ def build(lang, entries, audio, frames, images, marked, config, ocr, glossary, o
 
 
 def narration(root, lang, settings, args, stack):
+    args.transient_pcm = False
     utterances = root / settings.get("utterances", f"{lang}/utterances.json")
     if "utterances" in settings or utterances.is_file():
-        if args.resume and not args.dry_run:
-            rows = read(utterances)
+        rows = read(utterances)
+        if isinstance(rows, list):
+            args.transient_pcm = any(isinstance(row, dict) and isinstance(row.get("audio"), str)
+                                     and Path(row["audio"]).suffix.lower() == ".mp3" for row in rows)
+        if args.resume and not args.dry_run and not args.transient_pcm:
             entries = time_utterances(utterances, rows=rows, verify_pcm=True, profile=args.quality)
             paths = [utterances.parent / row["audio"] for row in rows]
             audio = stage_audio(args, stack, "narration", [entries, paths],
@@ -639,7 +703,7 @@ def narration(root, lang, settings, args, stack):
         audio = None
         if not args.dry_run:
             audio = Path(stack.enter_context(tempfile.TemporaryDirectory())) / "narration.wav"
-        return time_utterances(utterances, audio, profile=args.quality), audio
+        return time_utterances(utterances, audio, rows=rows, verify_pcm=args.dry_run, profile=args.quality), audio
     return (read(root / settings.get("timeline", f"{lang}/timeline.json")),
             root / settings.get("audio", f"{lang}/narration.wav"))
 
@@ -756,7 +820,7 @@ def youtube_dub(lang, master, entries, audio, destination, dry_run, window=None,
     print(f"{lang}: {len(source)} blocks, {duration:.2f}s, {large_changes} blocks with tempo changes over 20%")
     if dry_run:
         return
-    target = destination / f"{lang}.wav"
+    target = destination / f"{lang}.mp3"
     key = checkpoint_key(cache_version, audio, source, master, window, mix, plan) if cache_version else None
     if key and current(target, key):
         reuse_output(target)
@@ -767,27 +831,61 @@ def youtube_dub(lang, master, entries, audio, destination, dry_run, window=None,
             f"end_sample={(trim_start+duration_frames)*samples_per_frame},asetpts=PTS-STARTPTS") if window else ""
     graph = [f"[0:a]aresample={rate},asplit={len(source)}{inputs}", *filters,
              f"{outputs}concat=n={len(source)}:v=0:a=1{trim}[dub]"]
-    with tempfile.TemporaryDirectory(dir=destination) as work:
-        script = Path(work) / "dub.ffscript"
+    with ExitStack() as stack:
+        work = Path(stack.enter_context(tempfile.TemporaryDirectory(dir=destination)))
+        script = work / "dub.ffscript"
         script.write_text(";\n".join(graph), encoding="ascii")
-        # Stage in the output directory so the WAV inherits its permissions on Windows.
-        with tempfile.NamedTemporaryFile(dir=destination, suffix=".pending.wav", delete=False) as staging:
-            pending = Path(staging.name)
-        try:
-            call("ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(audio), "-filter_complex_script",
-                 str(script), "-map", "[dub]", "-c:a", "pcm_s16le", str(pending))
-            with wave.open(str(pending), "rb") as result:
-                if result.getnframes() != duration_frames * samples_per_frame:
-                    raise ValueError("Exported dub duration differs from the master")
-            result = pending
-            if mix is not None:
-                result = Path(work) / "mixed.wav"
-                render_mix(pending, result, duration_frames, mix, window[0] if window else 0, plan)
-            result.replace(target)
-            if key:
-                commit(target, key)
-        finally:
-            pending.unlink(missing_ok=True)
+        pending = work / "aligned.wav"
+        call("ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(audio), "-filter_complex_script",
+             str(script), "-map", "[dub]", "-c:a", "pcm_s16le", str(pending))
+        with wave.open(str(pending), "rb") as result:
+            if result.getnframes() != duration_frames * samples_per_frame:
+                raise ValueError("Exported dub duration differs from the master")
+        result = pending
+        if mix is not None:
+            result = work / "mixed.wav"
+            render_mix(pending, result, duration_frames, mix, window[0] if window else 0, plan, work=work)
+        with staged_artifact(target) as encoded:
+            encode_export_audio(result, encoded, duration_frames * samples_per_frame)
+            encoded.replace(target)
+        if key:
+            commit(target, key)
+    return target
+
+
+def encode_export_audio(source, target, samples):
+    call("ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(source), "-map", "0:a:0",
+         "-af", f"aresample=48000,apad=whole_len={samples},atrim=end_sample={samples}",
+         "-c:a", "libmp3lame", "-b:a", "192k", "-write_xing", "1", str(target))
+
+
+def mux_dub(master_video, narration, language, version, *, target=None):
+    target = target or master_video.parent.parent / language / master_video.name
+    signature = checkpoint_key(version, master_video, narration) if version else None
+    if signature and current(target, signature):
+        reuse_output(target)
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    audio_filter = []
+    if narration.suffix == ".mp3":
+        stream = json.loads(call("ffprobe", "-v", "error", "-select_streams", "v:0",
+                                 "-show_entries", "stream=duration_ts,time_base",
+                                 "-of", "json", str(master_video)))["streams"][0]
+        samples = int(int(stream["duration_ts"]) * Fraction(stream["time_base"]) * 48000)
+        audio_filter = ["-af", f"aresample=48000,apad=whole_len={samples},atrim=end_sample={samples}"]
+    with staged_artifact(target) as pending:
+        call("ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(master_video), "-i", str(narration),
+             "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", *audio_filter, "-c:a", "aac", "-b:a", "160k",
+             "-movflags", "+faststart", str(pending))
+        streams = json.loads(call("ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration_ts,time_base",
+                                  "-of", "json", str(pending)))["streams"]
+        durations = {stream["codec_type"]: int(stream["duration_ts"]) * Fraction(stream["time_base"])
+                     for stream in streams}
+        if set(durations) != {"video", "audio"} or durations["video"] != durations["audio"]:
+            raise ValueError(f"{language}: dubbed MP4 audio and video durations differ")
+        pending.replace(target)
+    if signature:
+        commit(target, signature)
     return target
 
 
@@ -803,6 +901,8 @@ def main():
     parser.add_argument("--argos", action="store_true", help="Use installed Argos models for missing translations")
     parser.add_argument("--youtube", action="store_true",
                         help="Build one master video and aligned WAV dubs")
+    parser.add_argument("--mux-dubs", action="store_true",
+                        help="Also export a synchronized MP4 for each dubbed language")
     parser.add_argument("--master-language", help="Override the master language for this YouTube build")
     parser.add_argument("--chapter", help="Build only this storyboard chapter")
     parser.add_argument("--cue-start", help="First cue in the fragment, inclusive")
@@ -818,9 +918,12 @@ def main():
         args.resume = args.command == "build"
     if args.resume and args.command != "build":
         parser.error("--resume requires build")
-    args.cache_version = None
+    args.cache_versions = {}
+    args.transient_pcm = False
     if args.youtube and args.command != "build":
         parser.error("--youtube requires build")
+    if args.mux_dubs and not args.youtube:
+        parser.error("--mux-dubs requires --youtube")
     if args.master_language and not args.youtube:
         parser.error("--master-language requires --youtube")
     if args.aspect == "9:16" and args.command != "build":
@@ -884,11 +987,20 @@ def main():
         out = youtube_output(out, args.resolution, master_lang, source)
     if args.resume and not args.dry_run:
         args.cache_directory = out / ".resume-cache"
-        args.cache_version = checkpoint_key(Path(__file__), Path(__file__).with_name("audio_mix.py"),
-                                            call("ffmpeg", "-version").splitlines()[0])
+        ffmpeg_version = call("ffmpeg", "-version").splitlines()[0]
+        # Bump the affected stage when changing its output or interpretation of inputs.
+        args.cache_versions = {
+            "frames": checkpoint_key("frames-v1", ffmpeg_version),
+            "video": checkpoint_key("video-v1", ffmpeg_version),
+            "audio": checkpoint_key("audio-v1", ffmpeg_version),
+            "mix": checkpoint_key("mix-v1", ffmpeg_version, Path(__file__).with_name("audio_mix.py")),
+            "mux": checkpoint_key("mux-v1", ffmpeg_version),
+        }
+        args.cache_versions["dub"] = checkpoint_key("dub-v1", ffmpeg_version, args.cache_versions["mix"] if mix else None)
     master = None
     master_window = None
     master_plan = None
+    master_video = None
     history = {}
     artifacts = {}
     capture = args.command == "build" and not args.dry_run
@@ -904,8 +1016,11 @@ def main():
                     entries, audio = narration(root, lang, settings, args, stack)
                 if args.youtube and lang != master_lang:
                     target = youtube_dub(lang, master, entries, audio, out, args.dry_run, master_window, mix,
-                                         master_plan, args.cache_version)
+                                         master_plan, args.cache_versions.get("dub"))
                     if capture:
+                        if args.mux_dubs:
+                            localized_video = mux_dub(master_video, target, lang, args.cache_versions.get("mux"))
+                            artifacts[localized_video.relative_to(root).as_posix()] = localized_video
                         _, selected_blocks = sync_blocks(master, blocks(entries), master_window)
                         selected = {block[0] for block in selected_blocks}
                         source_entries = [row for row in entries
@@ -939,6 +1054,8 @@ def main():
                     records = []
                     target = build(lang, entries, audio, frames, images, marked, config, ocr, glossary, out, args,
                                    montage, records)
+                    if args.youtube:
+                        master_video = target
                     if capture:
                         history[lang] = history_records(root, lang, settings, entries, records)
                     master = master_blocks
@@ -963,6 +1080,7 @@ def main():
                                          {"resolution": args.resolution, "aspect": args.aspect,
                                           "master_language": master_lang if args.youtube else None,
                                           "fragment": fragment, "mix": args.mix, "sound_map": args.sound_map,
+                                          "mux_dubs": args.mux_dubs,
                                           "quality": args.quality}, history, artifacts)
         print(f"Build snapshot: {snapshot['id']}")
 

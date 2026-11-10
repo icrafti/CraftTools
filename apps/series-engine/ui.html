@@ -91,6 +91,10 @@
     .result-list a { color: #005b76; font-weight: 660; }
     .result-list code { display: block; font-size: .8rem; margin-top: 3px; }
     .result-list button { min-height: auto; margin-top: 5px; padding: 4px 8px; font-size: .83rem; }
+    .skip-link { position: fixed; top: 8px; left: 8px; z-index: 100; padding: 10px 14px; background: white; color: #005b76; transform: translateY(-160%); }
+    .skip-link:focus { transform: none; }
+    .result-list summary { cursor: pointer; margin-top: 4px; }
+    .result-list .result-list li { padding: 5px 0; }
     details { margin-top: 12px; }
     summary { cursor: pointer; font-weight: 630; }
     details p, details button { margin-top: 8px; }
@@ -115,6 +119,7 @@
       pre { padding-inline: 17px; }
       .monitor { position: static; max-height: none; }
       .top nav { flex-basis: 100%; margin-left: 0; }
+      .top .shell { gap: 10px; padding-block: 14px; }
       .monitor > details, #queue-selected, #job-retry, #job-retry-message { margin-inline: 17px; }
     }
     @media (max-width: 380px) {
@@ -125,6 +130,7 @@
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Перейти к проекту</a>
   <header class="top">
     <div class="shell">
       <svg class="mark" viewBox="0 0 44 44" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2">
@@ -145,7 +151,7 @@
       </nav>
     </div>
   </header>
-  <main class="shell">
+  <main class="shell" id="main-content" tabindex="-1">
     <div class="workspace">
       <form class="panel" id="settings" novalidate>
         <section class="step" aria-labelledby="project-heading">
@@ -185,7 +191,7 @@
             <div class="choice-grid">
               <label class="choice">
                 <input type="radio" name="mode" value="youtube" checked>
-                <span><strong>Видео для YouTube</strong><small>Один MP4 и дорожки WAV</small></span>
+                <span><strong>Видео для YouTube</strong><small>Один MP4, MP3 и SRT на каждый язык</small></span>
               </label>
               <label class="choice">
                 <input type="radio" name="mode" value="separate">
@@ -196,7 +202,7 @@
           <div id="master-field" hidden>
             <label for="master-language" class="small">Основной язык видео</label>
             <select id="master-language" aria-describedby="master-hint"></select>
-            <p class="small hint" id="master-hint">Озвучка этого языка задаёт длительность видео и всех дублей.</p>
+            <p class="small hint" id="master-hint">Этот язык задаёт тайминг первой сборки. После экспорта основную озвучку можно сменить в результатах задания.</p>
           </div>
           <div class="language-header">
             <strong id="language-heading">Языки</strong>
@@ -211,7 +217,7 @@
             <label for="import-kind">Что импортировать</label>
             <select id="import-kind">
               <option value="manifest">Готовый список JSON</option>
-              <option value="folder">Папку WAV</option>
+              <option value="folder">Папку MP3</option>
             </select>
             <label for="import-manifest">Путь к списку или папке внутри проекта</label>
             <input type="text" id="import-manifest" placeholder="incoming/en/utterances.json" spellcheck="false">
@@ -236,8 +242,8 @@
             <div id="replace-fields" hidden>
               <label for="replace-row">Реплика</label>
               <select id="replace-row"></select>
-              <label for="replace-audio">Путь к новому WAV внутри проекта</label>
-              <input type="text" id="replace-audio" placeholder="incoming/new-line.wav" spellcheck="false">
+              <label for="replace-audio">Путь к новой реплике MP3 внутри проекта</label>
+              <input type="text" id="replace-audio" placeholder="incoming/new-line.mp3" spellcheck="false">
               <button type="button" id="replace-check">Проверить</button>
               <button type="button" id="replace-save">Заменить реплику</button>
             </div>
@@ -255,6 +261,16 @@
               <button type="button" id="pronunciation-test">Проверить</button>
               <button type="button" id="pronunciation-save">Сохранить словарь</button>
               <a id="pronunciation-export" download>Скачать JSONL для озвучки</a>
+              <details>
+                <summary>Локальный синтез речи</summary>
+                <label for="tts-provider">Синтезатор</label>
+                <select id="tts-provider">
+                  <option value="qwen">Qwen</option>
+                  <option value="omnivoice">OmniVoice</option>
+                </select>
+                <button type="button" id="tts-check">Проверить подключение</button>
+                <p class="small feedback" id="tts-message" role="status"></p>
+              </details>
               <p id="pronunciation-result"></p>
             </div>
             <p id="pronunciation-message" class="small feedback" role="status"></p>
@@ -584,7 +600,7 @@
       </form>
       <aside class="panel monitor" aria-labelledby="monitor-title">
         <details id="build-queue" open>
-          <summary>Очередь сборок</summary>
+          <summary>Очередь и история сборок</summary>
           <p id="queue-message" class="small feedback" role="status"></p>
           <ul id="queue-jobs" class="result-list"></ul>
         </details>
@@ -604,6 +620,20 @@
           <h2 id="result-heading">Готовые файлы</h2>
           <p class="small hint" id="results-hint">Результаты появятся после сборки.</p>
           <ul class="result-list" id="outputs"></ul>
+          <div id="switch-master" hidden>
+            <label for="switch-master-language">Основная озвучка готового видео</label>
+            <select id="switch-master-language"></select>
+            <button type="button" id="switch-master-button">Сменить без рендера</button>
+            <p class="small hint">Сохраняет длительность видео и синхронизацию дорожек и субтитров.</p>
+            <p class="small feedback" id="switch-master-message" role="status"></p>
+          </div>
+          <details>
+            <summary>Добавить старую сборку из отчёта</summary>
+            <label for="export-report">Имя отчёта в папке выбранного проекта</label>
+            <input id="export-report" placeholder="full-export-youtube-1080p.json">
+            <button type="button" id="export-import">Добавить в историю</button>
+            <p class="small feedback" id="export-import-message" role="status"></p>
+          </details>
         </section>
       </aside>
     </div>
@@ -702,7 +732,7 @@
         : youtube && !source?.ready
           ? "Добавьте озвучку основного языка или выберите отдельные видео."
           : youtube
-            ? "Основной язык входит в MP4. Остальные выбранные языки сохраняются как WAV."
+            ? "Голос основного языка войдёт в MP4. MP3 и SRT сохранятся для каждого выбранного языка."
             : "Выберите языки с готовой озвучкой. Для каждого сохранится отдельный MP4.";
       return {loaded, disabled, youtube};
     }
@@ -889,7 +919,10 @@
           image.src = ref.url;
           image.alt = "";
           image.loading = "lazy";
-          image.style.cssText = "display:block;width:180px;max-width:100%;height:auto";
+          image.width = 180;
+          image.height = 102;
+          image.decoding = "async";
+          image.style.cssText = "display:block;max-width:100%;object-fit:contain";
           link.append(image, document.createTextNode(ref.label));
           const caption = document.createElement("p");
           caption.append(link, document.createElement("br"), document.createTextNode(ref.image));
@@ -2010,7 +2043,11 @@
       link.rel = "noopener";
       const path = document.createElement("code");
       path.textContent = output.path;
-      row.append(link, path);
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "Путь к файлу";
+      details.append(summary, path);
+      row.append(link, details);
       if (navigator.clipboard) {
         const copy = document.createElement("button");
         copy.type = "button";
@@ -2023,12 +2060,70 @@
             copy.textContent = "Выделите путь вручную";
           }
         });
-        row.append(copy);
+        details.append(copy);
       }
       target.append(row);
     }
 
     let retryPayload = null;
+    let switchMasterRequest = null;
+    let switchMasterJob = null;
+
+    function showMasterSwitch(job) {
+      if (switchMasterJob === job.id && switchMasterRequest && job.status === "succeeded") return;
+      switchMasterJob = job.id;
+      switchMasterRequest = null;
+      byId("switch-master").hidden = true;
+      if (job.status !== "succeeded") return;
+      const paths = (job.outputs || []).map(output => output.path);
+      const videos = paths.filter(path => path.endsWith(".mp4"));
+      const audio = paths.filter(path => /\.(mp3|wav)$/.test(path) && paths.includes(path.replace(/\.(mp3|wav)$/, ".srt")));
+      if (videos.length !== 1 || audio.length < 2) return;
+      const tracks = audio[0].slice(0, audio[0].lastIndexOf("/"));
+      if (audio.some(path => path.slice(0, path.lastIndexOf("/")) !== tracks)) return;
+      const languages = audio.map(path => path.slice(tracks.length + 1, -4));
+      switchMasterRequest = {command: "switch_master", path: job.path, video: videos[0], tracks, languages,
+                             source_export: job.id};
+      const select = byId("switch-master-language");
+      select.replaceChildren(...languages.map(code => new Option(code, code)));
+      const current = job.master_language || videos[0].split("/").at(-2);
+      if (languages.includes(current)) select.value = current;
+      message(byId("switch-master-message"));
+      byId("switch-master").hidden = false;
+    }
+
+    byId("switch-master-button").addEventListener("click", async () => {
+      if (!switchMasterRequest || active) return;
+      const button = byId("switch-master-button");
+      button.disabled = true;
+      try {
+        await submitEdition({...switchMasterRequest, master_language: byId("switch-master-language").value},
+                            byId("switch-master-message"));
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    byId("export-import").addEventListener("click", async () => {
+      const feedback = byId("export-import-message");
+      const report = byId("export-report").value.trim();
+      if (!project || !report) return message(feedback, "Выберите проект и укажите имя отчёта.", true);
+      const button = byId("export-import");
+      button.disabled = true;
+      try {
+        const job = await api("/api/exports/import", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({path: project.path, report})
+        });
+        await selectJob(job.id, job);
+        await refreshQueue();
+        message(feedback, "Сборка добавлена в историю.");
+      } catch (error) {
+        message(feedback, error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
 
     function showJob(job) {
       status.dataset.state = job.status;
@@ -2045,7 +2140,23 @@
       byId("job-diagnostics").hidden = !issues.length;
       renderDiagnosticIssues(byId("job-diagnostics-issues"), issues);
       outputs.replaceChildren();
-      for (const output of job.outputs || []) addOutput(output);
+      const files = job.outputs || [];
+      for (const output of files.filter(item => !/\.(mp3|wav|srt)$/.test(item.path))) addOutput(output);
+      for (const [pattern, title] of [[/\.(mp3|wav)$/, "Аудиодорожки"], [/\.srt$/, "Субтитры"]]) {
+        const group = files.filter(output => pattern.test(output.path));
+        if (!group.length) continue;
+        const row = document.createElement("li");
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        const list = document.createElement("ul");
+        summary.textContent = `${title} (${group.length})`;
+        list.className = "result-list";
+        for (const output of group) addOutput(output, list);
+        details.append(summary, list);
+        row.append(details);
+        outputs.append(row);
+      }
+      showMasterSwitch(job);
       if (job.outputs?.length) {
         resultsHint.textContent = "Нажмите имя файла, чтобы открыть его.";
       } else if (job.status === "queued" || job.status === "running") {
@@ -2063,6 +2174,7 @@
 
     function jobKind(job) {
       if (job.command === "scan") return "Распознавание";
+      if (job.command === "switch_master") return "Смена основной озвучки";
       return job.dry_run ? "Проверка" : "Экспорт";
     }
 
@@ -2130,7 +2242,7 @@
             await selectJob(selected.id);
           }
         } else if (!selectedJob && jobs.length) {
-          await selectJob((jobs.find(({status}) => status === "running") || jobs[0]).id);
+          await selectJob((jobs.find(({status}) => status === "running") || jobs.at(-1)).id);
         }
       } catch {
         message(feedback, "Не удалось обновить очередь. Повторяем запрос.", true);
@@ -2548,7 +2660,12 @@
 
     async function initialize() {
       refreshQueue();
-      setInterval(refreshQueue, 1250);
+      async function pollQueue() {
+        await refreshQueue();
+        const working = status.dataset.state === "queued" || status.dataset.state === "running";
+        setTimeout(pollQueue, working ? 1250 : 5000);
+      }
+      setTimeout(pollQueue, 1250);
       api("/api/health").then((health) => {
         if (!health.ready) {
           const missing = Object.keys(health.tools).filter((name) => !health.tools[name]);
@@ -2591,7 +2708,7 @@
         }
         pathInput.value = created.path;
         await openProject();
-        message(feedback, "Проект создан. Добавьте кадры и WAV по шаблонам в " + created.path);
+        message(feedback, "Проект создан. Добавьте кадры и аудио по шаблонам в " + created.path);
       } catch (error) {
         message(feedback, error.message, true);
       } finally {
@@ -2626,6 +2743,25 @@
     }
 
     let pronunciationRequest = 0;
+    byId("tts-check").addEventListener("click", async () => {
+      if (!project) return;
+      const button = byId("tts-check");
+      const feedback = byId("tts-message");
+      const params = new URLSearchParams({path: project.path,
+        language: byId("pronunciation-language").value, provider: byId("tts-provider").value});
+      button.disabled = true;
+      message(feedback, "Проверяем подключение…");
+      try {
+        const result = await api("/api/narration/tts/health?" + params);
+        message(feedback, result?.ready === true ? "Синтезатор готов." : "Адаптер ответил. Синтезатор ещё не готов.",
+                result?.ready !== true);
+      } catch (error) {
+        message(feedback, error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+
     async function loadPronunciation() {
       if (!project || !byId("pronunciation-language").value) return;
       const request = ++pronunciationRequest;
@@ -2635,6 +2771,7 @@
       const language = byId("pronunciation-language").value;
       const params = new URLSearchParams({path: current.path, language});
       editor.hidden = true;
+      message(byId("tts-message"));
       message(feedback, "Читаем словарь…");
       try {
         const data = await api("/api/narration/pronunciation?" + params);
@@ -2711,7 +2848,7 @@
         byId("replace-row").replaceChildren(...data.rows.map((row) =>
           new Option(`${row.cue} · ${row.start.toFixed(2)} с${row.text ? " · " + row.text : ""}`, row.index)));
         byId("replace-fields").hidden = false;
-        message(feedback, data.legacy ? "При первой замене общий WAV будет разбит на клипы. Исходный WAV сохранится." : "");
+        message(feedback, data.legacy ? "При первой замене общий WAV будет разбит на клипы MP3." : "");
       } catch (error) {
         if (request === replacementRequest) message(feedback, error.message, true);
       }
@@ -2724,7 +2861,7 @@
       const feedback = byId("replace-message");
       const buttons = [button, byId("replace-check")];
       buttons.forEach((control) => { control.disabled = true; });
-      message(feedback, "Проверяем формат WAV и пересчитываем тайминг…");
+      message(feedback, "Проверяем аудио и пересчитываем тайминг…");
       try {
         const result = await api("/api/narration/replace", {
           method: "POST", headers: {"Content-Type": "application/json"},
@@ -2760,7 +2897,7 @@
       const buttons = [byId("import-check"), byId("import-save")];
       buttons.forEach((button) => { button.disabled = true; });
       byId("import-issues").replaceChildren();
-      message(feedback, "Проверяем список и WAV…");
+      message(feedback, "Проверяем список и аудио…");
       try {
         const result = await api("/api/narration/import", {
           method: "POST",
@@ -2776,7 +2913,7 @@
             ambiguous_wav: "Несколько возможных cue",
             unmatched_wav: "Файл не сопоставлен",
             ambiguous_cue: "Несколько файлов для cue",
-            missing_wav: "Нет WAV для cue",
+            missing_wav: "Нет аудио для cue",
           };
           message(feedback, `Совпало реплик: ${result.utterances}. Исправьте замечания перед импортом.`, true);
           for (const issue of result.issues) {
@@ -2816,7 +2953,7 @@
       if (entries.length === 1 && entries[0]?.isDirectory) {
         byId("import-manifest").value = entries[0].name;
       } else {
-        message(byId("import-message"), "Перетащите одну папку с WAV.", true);
+        message(byId("import-message"), "Перетащите одну папку с MP3.", true);
       }
     });
     byId("import-check").addEventListener("click", () => importNarration(true));

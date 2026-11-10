@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import io
 import json
 import math
 import os
@@ -15,6 +16,7 @@ import uuid
 import wave
 import webbrowser
 from collections import deque
+from fractions import Fraction
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html import escape
 from pathlib import Path
@@ -22,6 +24,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import series
 import build_history
+import tts_bridge
+from export_registry import ExportRegistry
 import quality
 
 
@@ -31,6 +35,7 @@ LANGUAGE = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
 MIME_TYPES = {
     ".mp4": "video/mp4",
     ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
     ".json": "application/json",
     ".txt": "text/plain; charset=utf-8",
     ".srt": "application/x-subrip; charset=utf-8",
@@ -147,6 +152,51 @@ def narration_for_tts(root, language):
             output.append(json.dumps({**row, "text": transform(row["text"])}, ensure_ascii=False))
     return ("\n".join(output) + "\n").encode("utf-8") if output else b""
 
+
+def tts_settings(root, query):
+    config = project_config(root)
+    language = query.get("language", [config.get("source_language")])[0]
+    if language not in config["languages"]:
+        raise ValueError("Choose a configured narration language")
+    settings = config.get("tts", {})
+    if not isinstance(settings, dict):
+        raise ValueError("tts must be an object in series.json")
+    provider = query.get("provider", [settings.get("provider", "microsoft")])[0]
+    if provider not in ("microsoft", "qwen", "omnivoice"):
+        raise ValueError("Choose microsoft, qwen or omnivoice")
+    profile = settings.get(provider, {})
+    if not isinstance(profile, dict):
+        raise ValueError("TTS provider settings must be an object")
+    endpoint = profile.get("endpoint", {"qwen": "http://127.0.0.1:9881",
+                                        "omnivoice": "http://127.0.0.1:9882"}.get(provider))
+    model = profile.get("model")
+    timeout = profile.get("timeout_seconds", 120)
+    if endpoint is not None:
+        if not isinstance(endpoint, str):
+            raise ValueError("TTS endpoint must be an HTTP or HTTPS URL")
+        address = urlsplit(endpoint)
+        if address.scheme not in ("http", "https") or not address.hostname or address.username or address.password:
+            raise ValueError("TTS endpoint must be an HTTP or HTTPS URL without credentials")
+        _ = address.port  # Validate an explicitly configured port.
+    if (model is not None and not isinstance(model, str)) or type(timeout) is not int or timeout <= 0:
+        raise ValueError("TTS model must be a string and timeout_seconds a positive integer")
+    voices = profile.get("voices", {})
+    if not isinstance(voices, dict) or not isinstance(overrides := voices.get(language, {}), dict):
+        raise ValueError("TTS voices must map languages to voice overrides")
+    if not all(isinstance(voice, str) and voice.strip() for voice in overrides.values()):
+        raise ValueError("TTS voice overrides must be nonempty strings")
+    voice_file = inside(root / language / "voices.json", root)
+    return {"provider": provider, "language": language, "endpoint": endpoint, "model": model,
+            "timeout_seconds": timeout, "voice_overrides": overrides,
+            "voices": series.read(voice_file) if voice_file.is_file() else None,
+            "narration_url": "/api/narration/tts?" + urlencode({"path": relative(root), "language": language})}
+
+
+def call_tts_bridge(profile, operation, speech=None):
+    try:
+        return tts_bridge.request(profile, operation, speech)
+    except RuntimeError as error:
+        raise ApiError(502, str(error)) from error
 
 
 def project_image(root, value):
@@ -463,7 +513,7 @@ def create_project(payload):
     folders = ["frames"]
     for code in codes:
         folders.append(f"{code}/clips")
-        documents[f"{code}/utterances.json"] = [{"cue": shot["cue"], "audio": "clips/001.wav"}]
+        documents[f"{code}/utterances.json"] = [{"cue": shot["cue"], "audio": "clips/001.mp3"}]
     documents["series.json"] = config
     result = {**project_info(root, config), "source_language": source, "languages": codes,
               "files": list(documents), "folders": folders, "dry_run": dry_run}
@@ -518,11 +568,13 @@ def sync_timeline(root, language, settings, utterance_output=None):
                                      profile=quality.profile(project_config(root)))
     timeline = inside(root / settings.get("timeline", f"{language}/timeline.json"), root)
     audio = inside(root / settings.get("audio", f"{language}/narration.wav"), root)
+    if not timeline.is_file():
+        raise series.BuildIssue("Narration timeline is missing", "missing_timeline", "prepare_timing", file=timeline)
     entries = series.read(timeline)
     if not isinstance(entries, list) or not entries:
         raise ValueError("Expected a nonempty narration timeline")
     if not audio.is_file():
-        raise ValueError("Narration audio file is missing")
+        raise series.BuildIssue("Narration audio file is missing", "missing_audio", "import_audio", file=audio)
     if abs(series.audio_duration(audio) - round(entries[-1]["end"] * series.FPS) / series.FPS) > 1 / series.FPS:
         raise ValueError("Narration audio duration differs from its timeline")
     return entries
@@ -910,9 +962,9 @@ def sync_audio(root, query, work):
     samples = rate // series.FPS
     block_filter = series.dub_block_filter(source[1] * samples, source[2] * samples,
                                           (target[2] - target[1]) * samples, tempo)
-    output = work / "block.wav"
+    output = work / "block.mp3"
     series.call("ffmpeg", "-nostdin", "-v", "error", "-i", str(audio), "-map", "0:a:0",
-                "-af", f"aresample={rate},{block_filter}", "-c:a", "pcm_s16le", str(output))
+                "-af", f"aresample={rate},{block_filter}", "-c:a", "libmp3lame", "-b:a", "192k", str(output))
     return output
 
 
@@ -927,7 +979,7 @@ def import_narration(payload, jobs):
     source_path = payload.get("manifest")
     folder_path = payload.get("folder")
     if (source_path is None) == (folder_path is None):
-        raise ValueError("Specify either a project-relative manifest or WAV folder")
+        raise ValueError("Specify either a project-relative manifest or a folder of audio clips")
     selected_path = source_path if folder_path is None else folder_path
     if not isinstance(selected_path, str) or not selected_path.strip():
         raise ValueError("Specify the input path inside the project")
@@ -951,13 +1003,13 @@ def import_narration(payload, jobs):
     else:
         base = source
         if not base.is_dir():
-            raise ValueError("WAV folder not found")
+            raise ValueError("Audio folder not found")
         rows, problems = match_narration_folder(base, ordered_cues)
         if problems:
             report = {"language": language, "utterances": len(rows), "issues": problems, "dry_run": dry_run}
             if dry_run:
                 return report
-            raise ApiError(409, "Resolve unmatched or ambiguous WAV files before importing")
+            raise ApiError(409, "Resolve unmatched or ambiguous audio files before importing")
     if not isinstance(rows, list) or not rows:
         raise ValueError("Expected a nonempty list of utterances")
     normalized = []
@@ -970,8 +1022,8 @@ def import_narration(payload, jobs):
         if "id" in row and (not isinstance(row["id"], str) or not row["id"].strip()):
             raise ValueError(f"Utterance {index}: expected a nonempty block id")
         clip = inside(base / audio, root).resolve()
-        if clip.suffix.lower() != ".wav" or not clip.is_file():
-            raise ValueError(f"Utterance {index}: WAV file not found: {audio}")
+        if clip.suffix.lower() != ".mp3" or not clip.is_file():
+            raise ValueError(f"Utterance {index}: expected an existing MP3 file: {audio}")
         normalized.append({**row, "audio": Path(os.path.relpath(clip, target.parent)).as_posix()})
     timeline = series.time_utterances(target, rows=normalized, verify_pcm=True,
                                       profile=quality.profile(project_config(root)))
@@ -1039,7 +1091,7 @@ def subtitle_timestamp(milliseconds, separator):
     return f"{hours:02}:{minutes:02}:{seconds:02}{separator}{ms:03}"
 
 
-def subtitle_export(root, query):
+def subtitle_export(root, query, master_entries=None):
     config = project_config(root)
     language = query.get("language", [config.get("source_language")])[0]
     master = query.get("master_language", [language])[0]
@@ -1048,7 +1100,10 @@ def subtitle_export(root, query):
         raise ValueError("Choose configured languages and SRT or VTT")
     _, script, entries, _, _ = editable_narration(root, language)
     source = series.blocks(entries)
-    master_entries = entries if master == language else sync_timeline(root, master, config["languages"][master])
+    if master == language:
+        master_entries = entries
+    elif master_entries is None:
+        master_entries = sync_timeline(root, master, config["languages"][master])
     target = source if master == language else series.blocks(master_entries)
     fragment = sync_fragment(root, config, query)
     window = series.slice_timeline(master_entries, fragment)[1] if fragment else None
@@ -1092,6 +1147,7 @@ def subtitle_export(root, query):
 
 def split_narration(audio, entries, directory, skip, profile):
     minimum, maximum = quality.shot_frames(profile, series.FPS)
+    sample_counts = {}
     with wave.open(str(audio), "rb") as source:
         channels, width, rate = source.getnchannels(), source.getsampwidth(), source.getframerate()
         for index, row in enumerate(entries):
@@ -1108,9 +1164,15 @@ def split_narration(audio, entries, directory, skip, profile):
                 raise ValueError(f"{series.cue(row)}: incomplete PCM audio")
             silence = b"\x80" if width == 1 else bytes(width)
             data += silence * ((expected - len(data)) // width)
-            with wave.open(str(directory / f"{index:05}.wav"), "wb") as clip:
+            buffer = io.BytesIO()
+            with wave.open(buffer, "wb") as clip:
                 clip.setparams((channels, width, rate, 0, "NONE", "not compressed"))
                 clip.writeframes(data)
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "wav", "-i", "pipe:0",
+                            "-c:a", "libmp3lame", "-q:a", "2", str(directory / f"{index:05}.mp3")],
+                           input=buffer.getvalue(), check=True)
+            sample_counts[index] = end - start
+    return sample_counts
 
 
 def replace_narration(payload, jobs):
@@ -1118,12 +1180,12 @@ def replace_narration(payload, jobs):
         raise ValueError("Expected a JSON object")
     root = project_root(payload.get("path"))
     language, index = payload.get("language"), payload.get("index")
-    wav, dry_run = payload.get("audio"), payload.get("dry_run", False)
-    if not isinstance(language, str) or type(index) is not int or not isinstance(wav, str) or type(dry_run) is not bool:
-        raise ValueError("Specify a language, utterance index, and replacement WAV path")
-    source = inside(root / wav, root).resolve()
-    if source.suffix.lower() != ".wav" or not source.is_file():
-        raise ValueError("Replacement must be a WAV file inside the project")
+    audio, dry_run = payload.get("audio"), payload.get("dry_run", False)
+    if not isinstance(language, str) or type(index) is not int or not isinstance(audio, str) or type(dry_run) is not bool:
+        raise ValueError("Specify a language, utterance index, and replacement audio path")
+    source = inside(root / audio, root).resolve()
+    if source.suffix.lower() != ".mp3" or not source.is_file():
+        raise ValueError("Replacement must be an MP3 file inside the project")
     with jobs.lock:
         if jobs.busy and not dry_run:
             raise ApiError(409, "Wait for the active job before replacing narration")
@@ -1139,10 +1201,12 @@ def replace_narration(payload, jobs):
         try:
             if legacy is not None:
                 stage = Path(tempfile.mkdtemp(prefix="source-clips-", dir=root))
-                split_narration(legacy, entries, stage, index, profile)
-                for i, row in enumerate(rows):
-                    row["audio"] = Path(os.path.relpath(stage / f"{i:05}.wav", manifest.parent)).as_posix()
-            rows[index] = {**rows[index], "audio": Path(os.path.relpath(source, manifest.parent)).as_posix()}
+                sample_counts = split_narration(legacy, entries, stage, index, profile)
+                for i, samples in sample_counts.items():
+                    rows[i]["audio"] = Path(os.path.relpath(stage / f"{i:05}.mp3", manifest.parent)).as_posix()
+                    rows[i]["samples"] = samples
+            rows[index] = {key: value for key, value in rows[index].items() if key != "samples"}
+            rows[index]["audio"] = Path(os.path.relpath(source, manifest.parent)).as_posix()
             updated = series.time_utterances(manifest, rows=rows, verify_pcm=True, profile=profile)
             identifier = updated[index]["id"]
             old = {block[0]: block for block in series.blocks(entries)}[identifier]
@@ -1175,7 +1239,7 @@ def match_narration_folder(folder, cues):
     matches = {}
     issues = []
     for file in sorted(folder.iterdir()):
-        if file.suffix.casefold() != ".wav" or not file.is_file():
+        if file.suffix.casefold() != ".mp3" or not file.is_file():
             continue
         candidates = names.get(file.stem.casefold(), [])
         if len(candidates) != 1:
@@ -1308,6 +1372,7 @@ def compare_builds(root, query):
 def language_status(root, code, settings, cues):
     issues = []
     ready = narration_ready(root, code, settings)
+    audio_present = ready
     manifest = inside(root / settings.get("utterances", f"{code}/utterances.json"))
     if "utterances" in settings or manifest.is_file():
         if not ready:
@@ -1327,19 +1392,36 @@ def language_status(root, code, settings, cues):
             issues.append({"code": "invalid_timeline", "path": relative(timeline)})
             rows = []
             ready = False
+    audio_ids = []
     for row in rows:
         try:
             cue = series.cue(row)
+            if not isinstance(cue, str):
+                raise TypeError("Expected a cue string")
         except (AttributeError, KeyError, TypeError):
             issues.append({"code": "invalid_cue"})
             ready = False
             continue
         if cue not in cues:
             issues.append({"code": "unknown_cue", "cue": cue})
+            ready = False
+        identifier = row.get("id") or cue.rsplit(":", 1)[0]
+        if not isinstance(identifier, str) or not identifier.strip():
+            issues.append({"code": "invalid_block_id", "cue": cue})
+            ready = False
+        elif not audio_ids or audio_ids[-1] != identifier:
+            audio_ids.append(identifier)
     voices = inside(root / code / "voices.json")
     if not voices.is_file():
         issues.append({"code": "missing_voice_catalog", "path": relative(voices)})
-    return {"code": code, "ready": ready, "issues": issues}
+    try:
+        script_ids = full_script_ids(inside(root / code / "narration.jsonl", root))
+    except (OSError, ValueError):
+        script_ids = None
+    return {"code": code, "ready": ready, "issues": issues,
+            "script_blocks": len(script_ids) if script_ids is not None else None,
+            "audio_blocks": len(audio_ids) if audio_present else 0,
+            "complete": (ready and audio_ids == script_ids) if script_ids is not None else None}
 
 
 def diagnostic(code, retry_step, message, language=None, cue=None, file=None, severity="error"):
@@ -1349,6 +1431,65 @@ def diagnostic(code, retry_step, message, language=None, cue=None, file=None, se
             "severity": severity}
 
 
+def full_script_ids(source):
+    expected = []
+    seen = set()
+    with source.open(encoding="utf-8-sig") as stream:
+        for index, line in enumerate(stream, 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            identifier = row.get("id") if isinstance(row, dict) else None
+            if not isinstance(identifier, str) or not identifier.strip() or identifier in seen:
+                raise ValueError(f"Expected a unique block id on line {index}")
+            seen.add(identifier)
+            expected.append(identifier)
+    if not expected:
+        raise ValueError("The full script has no blocks")
+    return expected
+
+
+def complete_script_issue(root, language, entries):
+    source = inside(root / language / "narration.jsonl", root)
+    try:
+        expected = full_script_ids(source)
+    except (OSError, ValueError) as error:
+        return diagnostic("invalid_full_script", "prepare_full_script", str(error), language, file=source)
+    actual = [identifier for identifier, _, _ in series.blocks(entries)]
+    if actual == expected:
+        return None
+    first = next((index for index, pair in enumerate(zip(expected, actual)) if pair[0] != pair[1]),
+                 min(len(expected), len(actual)))
+    wanted = expected[first] if first < len(expected) else None
+    found = actual[first] if first < len(actual) else None
+    return diagnostic("incomplete_script_coverage", "import_audio",
+                      f"Audio has {len(actual)} blocks, full script has {len(expected)}. "
+                      f"At block {first + 1} expected {wanted or 'end of script'}, got {found or 'end of audio'}.",
+                      language, wanted or found, source)
+
+
+def full_build_issues(payload):
+    root = project_root(payload["path"])
+    config = project_config(root)
+    languages = payload.get("languages") or list(config["languages"])
+    if payload.get("youtube"):
+        master = payload.get("master_language", config.get("source_language"))
+        languages = [master, *(language for language in languages if language != master)]
+    issues = []
+    for language in languages:
+        try:
+            entries = sync_timeline(root, language, config["languages"][language])
+            issue = complete_script_issue(root, language, entries)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, subprocess.CalledProcessError) as error:
+            file = getattr(error, "file", None) or getattr(error, "filename", None)
+            issue = diagnostic(getattr(error, "code", "invalid_narration"),
+                               getattr(error, "retry_step", "prepare_timing"), str(error),
+                               language, getattr(error, "cue", None), Path(file) if file else None)
+        if issue is not None:
+            issues.append(issue)
+    return issues
+
+
 def project_diagnostics(root, query):
     config = project_config(root)
     profile = quality.profile(config)
@@ -1356,6 +1497,12 @@ def project_diagnostics(root, query):
     languages = query.get("language", list(config["languages"]))
     if any(code not in config["languages"] for code in languages) or len(languages) != len(set(languages)):
         raise ValueError("Choose distinct configured languages")
+    complete = query.get("require_complete", ["false"])
+    if complete not in (["true"], ["false"]):
+        raise ValueError("require_complete must be true or false")
+    youtube = query.get("youtube", ["false"])
+    if youtube not in (["true"], ["false"]):
+        raise ValueError("youtube must be true or false")
     issues = []
     for executable in ("ffmpeg", "ffprobe"):
         if shutil.which(executable) is None:
@@ -1424,12 +1571,17 @@ def project_diagnostics(root, query):
                 for row in rows:
                     clip = inside(manifest.parent / row["audio"], root)
                     if not clip.is_file():
-                        issues.append(diagnostic("missing_wav", "import_audio", "Utterance WAV is missing",
+                        issues.append(diagnostic("missing_mp3" if clip.suffix.lower() == ".mp3" else "missing_wav",
+                                                 "import_audio", "Utterance audio is missing",
                                                  language, series.cue(row), clip))
                         clips_missing = True
                 if clips_missing:
                     continue
             entries = sync_timeline(root, language, settings)
+            if complete == ["true"]:
+                issue = complete_script_issue(root, language, entries)
+                if issue is not None:
+                    issues.append(issue)
         except (OSError, ValueError, TypeError, KeyError, AttributeError, subprocess.CalledProcessError) as error:
             file = getattr(error, "file", None) or getattr(error, "filename", None)
             issues.append(diagnostic(getattr(error, "code", "invalid_narration"),
@@ -1460,7 +1612,7 @@ def project_diagnostics(root, query):
                 except ValueError as error:
                     issues.append(diagnostic("invalid_cut", "edit_montage", str(error), language, cue, montage_path))
             name, image = shots[cue]
-            if series.original_art_language(config, language):
+            if youtube == ["true"] or series.original_art_language(config, language):
                 continue
             regions = config.get("regions", {}).get(name)
             if regions is None and name in marked and image.is_file():
@@ -1519,7 +1671,8 @@ def job_command(payload):
     if not isinstance(payload, dict):
         raise ValueError("Expected a JSON object")
     allowed = {"path", "command", "languages", "youtube", "resolution", "aspect", "dry_run", "master_language",
-               "chapter", "cue_start", "cue_end", "mix", "music", "ambience", "sound_map", "resume"}
+               "chapter", "cue_start", "cue_end", "mix", "music", "ambience", "sound_map", "resume",
+               "require_complete", "mux_dubs", "sidecars"}
     if unknown := payload.keys() - allowed:
         raise ValueError(f"Unknown fields: {', '.join(sorted(unknown))}")
     root = project_root(payload.get("path"))
@@ -1528,7 +1681,10 @@ def job_command(payload):
     resolution = payload.get("resolution", "1080p")
     aspect = payload.get("aspect", "16:9")
     youtube = payload.get("youtube", False)
+    mux_dubs = payload.get("mux_dubs", False)
+    sidecars = payload.get("sidecars", youtube and not mux_dubs)
     dry_run = payload.get("dry_run", False)
+    require_complete = payload.get("require_complete", False)
     mix = payload.get("mix", False)
     sound_map = payload.get("sound_map", False)
     resume = payload.get("resume", command == "build")
@@ -1539,8 +1695,15 @@ def job_command(payload):
         raise ValueError("resolution must be 360p or 1080p")
     if aspect not in series.ASPECTS or (aspect == "9:16" and command != "build"):
         raise ValueError("aspect must be 16:9 or 9:16; vertical output requires build")
-    if not all(isinstance(flag, bool) for flag in (youtube, dry_run, mix, sound_map, resume)):
-        raise ValueError("youtube, dry_run, mix, sound_map and resume must be booleans")
+    if not all(isinstance(flag, bool) for flag in (youtube, dry_run, mix, sound_map, resume,
+                                                    require_complete, mux_dubs, sidecars)):
+        raise ValueError("youtube, dry_run, mix, sound_map, resume, require_complete, mux_dubs and sidecars must be booleans")
+    if mux_dubs and not youtube:
+        raise ValueError("mux_dubs requires a YouTube build")
+    if sidecars and (not youtube or mux_dubs):
+        raise ValueError("sidecars requires a YouTube build without mux_dubs")
+    if require_complete and (command != "build" or any(key in payload for key in ("chapter", "cue_start", "cue_end"))):
+        raise ValueError("require_complete needs a whole-project build")
     if resume and command != "build":
         raise ValueError("resume requires build")
     audio_fields = {key: payload[key] for key in ("music", "ambience") if key in payload}
@@ -1585,7 +1748,9 @@ def job_command(payload):
             raise ValueError("Choose a configured master_language or set source_language")
         work = inside(series.youtube_output(work, resolution, master, source))
         selected = [master, *(code for code in selected if code != master)]
-        outputs = [work / master / filename, *(work / f"{code}.wav" for code in selected[1:])]
+        outputs = [work / master / filename, *(work / f"{code}.mp3" for code in selected[1:])]
+        if mux_dubs:
+            outputs.extend(work / code / filename for code in selected[1:])
     elif command == "build":
         outputs = [work / code / filename for code in selected]
     else:
@@ -1612,9 +1777,123 @@ def job_command(payload):
         arguments.append("--dry-run")
     if youtube:
         arguments.append("--youtube")
+        if mux_dubs:
+            arguments.append("--mux-dubs")
         if "master_language" in payload:
             arguments.extend(("--master-language", master))
     return arguments, outputs
+
+
+def youtube_subtitles(payload):
+    root = project_root(payload["path"])
+    config = project_config(root)
+    master = payload.get("master_language", config.get("source_language"))
+    languages = payload.get("languages") or list(config["languages"])
+    fragment = {key: [payload[key]] for key in ("chapter", "cue_start", "cue_end") if key in payload}
+    master_entries = sync_timeline(root, master, config["languages"][master])
+    return master, {
+        code: subtitle_export(root, {**fragment, "language": [code], "master_language": [master]}, master_entries)[2]
+        for code in dict.fromkeys([master, *languages])
+    }
+
+
+def extract_audio(source, target, frames):
+    series.encode_export_audio(source, target, frames * (48000 // series.FPS))
+
+
+def write_youtube_sidecars(video, master, subtitles, registry=None):
+    directory = video.parent.parent
+    paths = [inside(directory / f"{master}.mp3"),
+             *(inside(directory / f"{code}.srt") for code in subtitles)]
+    names = [relative(video), relative(paths[0])]
+    if not registry or not any(registry.matches(record, names) for record in registry.recent(MAX_JOBS)):
+        frames = int(series.call("ffprobe", "-v", "error", "-select_streams", "v:0",
+                                 "-show_entries", "stream=nb_frames", "-of", "csv=p=0", str(video)).strip())
+        with series.staged_artifact(paths[0]) as pending:
+            extract_audio(video, pending, frames)
+            pending.replace(paths[0])
+    for path, body in zip(paths[1:], subtitles.values(), strict=True):
+        if path.is_file() and path.read_bytes() == body:
+            continue
+        with series.staged_artifact(path) as pending:
+            pending.write_bytes(body)
+            pending.replace(path)
+    return paths
+
+
+def master_switch_inputs(payload, registry=None):
+    if set(payload) - {"path", "command", "video", "tracks", "languages", "master_language", "source_export"}:
+        raise ValueError("Unknown fields for switch_master")
+    root = project_root(payload.get("path"))
+    config = project_config(root)
+    languages = payload.get("languages", list(config["languages"]))
+    if (not isinstance(languages, list) or not languages or
+            not all(isinstance(code, str) and code in config["languages"] for code in languages) or
+            len(languages) != len(set(languages))):
+        raise ValueError("Choose a nonempty list of distinct configured languages")
+    master = payload.get("master_language")
+    if master not in languages:
+        raise ValueError("Choose a master from the selected languages")
+    for field in ("video", "tracks"):
+        if not isinstance(payload.get(field), str) or not payload[field] or Path(payload[field]).is_absolute():
+            raise ValueError(f"Specify a workspace-relative {field} path")
+    video = inside(WORKSPACE / payload["video"], root)
+    directory = inside(WORKSPACE / payload["tracks"], root)
+    if video.suffix.lower() != ".mp4" or not video.is_file() or not directory.is_dir():
+        raise ValueError("Choose an exported MP4 and its aligned track folder")
+    candidates = [[inside(directory / f"{code}.{extension}", root)
+                   for code in languages for extension in (audio_format, "srt")]
+                  for audio_format in ("mp3", "wav")]
+    tracks = next((paths for paths in candidates if all(path.is_file() for path in paths)), None)
+    if registry is not None:
+        identifier = payload.get("source_export")
+        records = [registry.load(identifier)] if identifier is not None else registry.recent(MAX_JOBS)
+        tracks = next((paths for paths in candidates if any(
+            record and record["job"]["path"] == relative(root)
+            and registry.matches(record, [relative(path) for path in (video, *paths)])
+            for record in records)), None)
+    if tracks is None:
+        raise ValueError("Choose a registered export containing this video and all selected tracks")
+    names = [relative(path) for path in (video, *tracks)]
+    versions = [(name, file_version(path)) for name, path in zip(names, (video, *tracks))]
+    identity = hashlib.sha256(repr(versions).encode()).hexdigest()[:16]
+    target = inside(directory / "switch-master" / identity / master / video.name, root)
+    return video, tracks, target, master
+
+
+def switch_master(payload, registry=None):
+    video, tracks, target, master = master_switch_inputs(payload, registry)
+    stream = json.loads(series.call("ffprobe", "-v", "error", "-select_streams", "v:0",
+                                    "-show_entries", "stream=duration_ts,time_base", "-of", "json",
+                                    str(video)))["streams"][0]
+    duration = int(stream["duration_ts"]) * Fraction(stream["time_base"])
+    for track in tracks:
+        if track.suffix == ".wav":
+            with wave.open(str(track), "rb") as audio:
+                if Fraction(audio.getnframes(), audio.getframerate()) != duration:
+                    raise ValueError(f"{track.name} does not match the video clock. Export aligned tracks first.")
+        elif track.suffix == ".mp3":
+            # MP3 stream headers include encoder delay and frame padding.
+            if abs(series.audio_duration(track) - float(duration)) > 0.05:
+                raise ValueError(f"{track.name} does not match the video clock")
+        else:
+            captions = track.read_text(encoding="utf-8-sig")
+            ranges = re.findall(r"(?m)^(\d{2,}:\d{2}:\d{2},\d{3}) --> (\d{2,}:\d{2}:\d{2},\d{3})$", captions)
+            previous = 0
+            for left, right in ranges:
+                times = []
+                for stamp in (left, right):
+                    hours, minutes, seconds, ms = map(int, re.split(r"[:,]", stamp))
+                    times.append(((hours * 60 + minutes) * 60 + seconds) * 1000 + ms)
+                start, end = times
+                if not previous <= start < end <= duration * 1000:
+                    raise ValueError(f"{track.name} contains timestamps outside the video clock or out of order")
+                previous = end
+            if not ranges:
+                raise ValueError(f"{track.name} contains no timed subtitles")
+    audio = next(track for track in tracks if track.stem == master and track.suffix in (".mp3", ".wav"))
+    series.mux_dub(video, audio, master, "switch-master-v1", target=target)
+    return [target, *tracks]
 
 
 def file_version(path):
@@ -1623,6 +1902,47 @@ def file_version(path):
         return stat.st_mtime_ns, stat.st_size, stat.st_ino
     except FileNotFoundError:
         return None
+
+
+def import_export_report(payload, jobs):
+    if not isinstance(payload, dict):
+        raise ValueError("Expected a JSON object")
+    root = project_root(payload.get("path"))
+    report_name = payload.get("report")
+    if not isinstance(report_name, str) or not re.fullmatch(r"full-export-[A-Za-z0-9-]+\.json", report_name):
+        raise ValueError("Choose a full-export report from the project folder")
+    with jobs.lock:
+        if jobs.busy:
+            raise ApiError(409, "Wait for the active export before importing a report")
+        report = inside(root / report_name, root)
+        data = series.read(report)
+        audio_format = "mp3" if "mp3" in data else "wav"
+        audio, captions = data[audio_format], data["srt"]
+        config = project_config(root)
+        languages = config["languages"]
+        if not isinstance(audio, dict) or not isinstance(captions, dict) or not audio or audio.keys() != captions.keys():
+            raise ValueError("The report must list matching audio and SRT tracks")
+        video = inside(root / data["video"], root)
+        if video.suffix != ".mp4":
+            raise ValueError("The report must include an MP4 video")
+        tracks = []
+        for code in audio:
+            if code not in languages:
+                raise ValueError("The report contains an unconfigured language")
+            for ext, value in ((audio_format, audio[code]), ("srt", captions[code])):
+                track = inside(root / value, root)
+                if track.parent != video.parent or track.name != f"{code}.{ext}":
+                    raise ValueError("The report must list sibling tracks named by language")
+                tracks.append(track)
+        paths = [video, *tracks]
+        if any(not path.is_file() or path.stat().st_mtime_ns > report.stat().st_mtime_ns for path in paths):
+            raise ValueError("An artifact is missing or newer than the report")
+        identifier = hashlib.sha256((relative(report) + ":" + repr(file_version(report))).encode()).hexdigest()[:32]
+        job = {"id": identifier, "path": relative(root), "command": "build", "dry_run": False,
+               "status": "succeeded", "log": f"Imported from {report_name}", "issues": [], "exit_code": 0,
+               "master_language": data.get("master_language", config.get("source_language")),
+               "outputs": [{"path": relative(path)} for path in paths]}
+        return jobs.registry.save(job)["job"]
 
 
 def publication_package(payload, jobs):
@@ -1635,6 +1955,15 @@ def publication_package(payload, jobs):
         if jobs.busy:
             raise ApiError(409, "Wait for the active export before packaging")
         return prepare_publication(payload, dry_run)
+
+
+def validate_publication_video(path, frames, duration):
+    count = series.call("ffprobe", "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=nb_frames", "-of", "csv=p=0", str(path)).strip()
+    if not count.isdigit() or int(count) != frames:
+        raise ValueError("Video frame count differs from the current timeline. Rebuild the edition.")
+    if abs(series.audio_duration(path) - duration) > 1 / series.FPS:
+        raise ValueError("Video audio differs from the current timeline. Rebuild the edition.")
 
 
 def prepare_publication(payload, dry_run):
@@ -1658,7 +1987,9 @@ def prepare_publication(payload, dry_run):
     def issue(code, language, message, blocking=True):
         issues.append({"code": code, "language": language, "message": message, "blocking": blocking})
 
-    for code, source in zip(languages, sources, strict=True):
+    primary, extras = sources[:len(languages)], sources[len(languages):]
+    dubbed = {path.parent.name: path for path in extras}
+    for code, source in zip(languages, primary, strict=True):
         if not source.is_file():
             issue("missing_render", code, f"Сначала соберите {source.name} для {code}.")
             continue
@@ -1667,18 +1998,19 @@ def prepare_publication(payload, dry_run):
             chapters = chapter_report(root, query)
             expected = round(chapters["duration"] * series.FPS)
             if source.suffix == ".mp4":
-                count = series.call("ffprobe", "-v", "error", "-select_streams", "v:0",
-                                    "-show_entries", "stream=nb_frames", "-of", "csv=p=0", str(source)).strip()
-                if not count.isdigit() or int(count) != expected:
-                    raise ValueError("Video frame count differs from the current timeline. Rebuild the edition.")
-                if abs(series.audio_duration(source) - chapters["duration"]) > 1 / series.FPS:
-                    raise ValueError("Video audio differs from the current timeline. Rebuild the edition.")
+                validate_publication_video(source, expected, chapters["duration"])
                 files["video.mp4" if youtube else f"{code}/video.mp4"] = source
-                extract[f"{code}/audio.wav"] = (source, expected)
+                extract[f"{code}/audio.mp3"] = (source, expected)
             else:
-                if abs(series.audio_duration(source) - chapters["duration"]) > 1 / series.FPS:
+                if abs(series.audio_duration(source) - chapters["duration"]) > 0.05:
                     raise ValueError("Dub duration differs from the master. Rebuild the edition.")
-                files[f"{code}/audio.wav"] = source
+                files[f"{code}/audio.mp3"] = source
+                if code in dubbed:
+                    if not dubbed[code].is_file():
+                        issue("missing_render", code, f"Сначала соберите {dubbed[code].name} для {code}.")
+                    else:
+                        validate_publication_video(dubbed[code], expected, chapters["duration"])
+                        files[f"{code}/video.mp4"] = dubbed[code]
             for style in ("srt", "vtt"):
                 _, _, body = subtitle_export(root, {**query, "format": [style]})
                 files[f"{code}/subtitles.{style}"] = body
@@ -1720,10 +2052,7 @@ def prepare_publication(payload, dry_run):
             else:
                 path.write_bytes(value)
         for name, (source, frames) in extract.items():
-            length = frames * (48000 // series.FPS)
-            series.call("ffmpeg", "-nostdin", "-v", "error", "-i", str(source), "-map", "0:a:0",
-                        "-af", f"aresample=48000,apad=whole_len={length},atrim=end_sample={length}",
-                        "-c:a", "pcm_s16le", str(staging / name))
+            extract_audio(source, staging / name, frames)
         (staging / "manifest.json").write_text(json.dumps(
             {"edition": {key: value for key, value in payload.items() if key != "dry_run"},
              "languages": languages, "master_language": master, "files": names, "issues": issues},
@@ -1768,6 +2097,8 @@ class Previews:
         identifier = uuid.uuid4().hex
         combined = "utterances" in settings or manifest.is_file()
         temporary = self.directory / f"{identifier}.wav"
+        compressed = self.directory / f"{identifier}.mp3"
+        staged = temporary if combined else None
         try:
             if combined:
                 rows = series.read(manifest)
@@ -1779,6 +2110,10 @@ class Previews:
                     inside(manifest.parent / row["audio"], root)
                 audio = temporary
                 entries = series.time_utterances(manifest, audio, rows=rows, profile=quality.profile(config))
+                if any(Path(row["audio"]).suffix.lower() == ".mp3" for row in rows):
+                    series.encode_export_audio(temporary, compressed, round(entries[-1]["end"] * 48000))
+                    temporary.unlink()
+                    audio = staged = compressed
             else:
                 timeline = inside(root / settings.get("timeline", f"{language}/timeline.json"), root)
                 audio = inside(root / settings.get("audio", f"{language}/narration.wav"), root).resolve()
@@ -1814,15 +2149,16 @@ class Previews:
             with self.lock:
                 if len(self.files) >= MAX_PREVIEWS:
                     oldest = next(iter(self.files))
-                    _, staged = self.files.pop(oldest)
-                    if staged:
+                    _, expired = self.files.pop(oldest)
+                    if expired:
                         try:
-                            staged.unlink(missing_ok=True)
+                            expired.unlink(missing_ok=True)
                         except PermissionError:
                             pass
-                self.files[identifier] = (audio, temporary if combined else None)
+                self.files[identifier] = (audio, staged)
         except Exception:
             temporary.unlink(missing_ok=True)
+            compressed.unlink(missing_ok=True)
             raise
         return {"language": language, "duration": frames[-1]["end"], "frames": frames,
                 "close_zoom": series.CLOSE_ZOOM,
@@ -1838,6 +2174,8 @@ class Previews:
 
 class Jobs:
     def __init__(self):
+        self.registry = ExportRegistry(inside(WORKSPACE / "output" / ".series-exports"),
+                                       lambda name: inside(WORKSPACE / name))
         self.jobs = {}
         self.lock = threading.Lock()
         self.active = None
@@ -1848,9 +2186,12 @@ class Jobs:
 
     def get(self, identifier):
         with self.lock:
-            if identifier not in self.jobs:
-                raise ApiError(404, "Job not found")
-            return self.jobs[identifier].copy()
+            if identifier in self.jobs:
+                return self.jobs[identifier].copy()
+            record = self.registry.load(identifier)
+            if record:
+                return record["job"]
+            raise ApiError(404, "Job not found")
 
     @property
     def busy(self):
@@ -1860,14 +2201,19 @@ class Jobs:
         with self.lock:
             positions = {job["id"]: index for index, (job, _) in enumerate(self.pending, 1)}
             keys = ("id", "path", "command", "dry_run", "status", "exit_code")
+            archived = [record["job"] for record in reversed(self.registry.recent(MAX_JOBS))
+                        if record["job"]["id"] not in self.jobs]
             return {"jobs": [{**{key: job[key] for key in keys}, "queue_position": positions.get(job["id"])}
-                             for job in self.jobs.values()]}
+                             for job in [*archived, *self.jobs.values()][-MAX_JOBS:]]}
 
     def submit(self, payload):
         with self.lock:
             if not self.accepting:
                 raise ApiError(503, "The server is closing")
-            job_command(payload)
+            if isinstance(payload, dict) and payload.get("command") == "switch_master":
+                master_switch_inputs(payload, self.registry)
+            else:
+                job_command(payload)
             if len(self.jobs) >= MAX_JOBS:
                 finished = next((key for key, job in self.jobs.items()
                                  if job["status"] in ("succeeded", "failed")), None)
@@ -1903,7 +2249,25 @@ class Jobs:
         issues = []
         reused = set()
         try:
+            if job["command"] == "switch_master":
+                for path in switch_master(payload, self.registry):
+                    name = relative(path)
+                    outputs.append({"path": name, "url": "/api/files?" + urlencode({"path": name})})
+                with self.lock:
+                    job["master_language"] = payload["master_language"]
+                    job["log"] = "Video stream copied. Aligned audio and SRT files use the existing video clock."
+                exit_code = 0
+                return
             arguments, candidates = job_command(payload)
+            if payload.get("require_complete"):
+                issues = full_build_issues(payload)
+                if issues:
+                    with self.lock:
+                        job["log"] = "\n".join(f"{item['language']}: {item['message']}" for item in issues)[-MAX_LOG:]
+                    return
+            sidecars = payload.get("sidecars", payload.get("youtube", False) and not payload.get("mux_dubs", False))
+            if sidecars:
+                master, subtitles = youtube_subtitles(payload)
             before = {path: file_version(path) for path in candidates}
             environment = {**os.environ, "PYTHONIOENCODING": "utf-8", "SERIES_DIAGNOSTICS": "1"}
             if os.name == "nt":
@@ -1938,11 +2302,32 @@ class Jobs:
                 if version is not None and (version != before[path] or path in reused) and path.is_file():
                     name = relative(path)
                     outputs.append({"path": name, "url": "/api/files?" + urlencode({"path": name})})
+            if exit_code == 0 and sidecars and candidates:
+                if len(outputs) != len(candidates):
+                    raise ValueError("The export did not produce all requested audio and video files")
+                for path in write_youtube_sidecars(candidates[0], master, subtitles,
+                                                   self.registry if payload.get("resume", True) else None):
+                    name = relative(path)
+                    outputs.append({"path": name, "url": "/api/files?" + urlencode({"path": name})})
+                with self.lock:
+                    job["master_language"] = master
         except Exception as error:
             exit_code = 1
             with self.lock:
                 job["log"] = (job["log"] + str(error) + "\n")[-MAX_LOG:]
         finally:
+            if exit_code == 0 and outputs:
+                try:
+                    receipt = self.registry.save({**job, "status": "succeeded", "outputs": outputs,
+                                                  "exit_code": 0, "issues": issues})
+                    outputs = receipt["job"]["outputs"]
+                except (OSError, ValueError) as error:
+                    exit_code = 1
+                    outputs = []
+                    with self.lock:
+                        job["log"] = (job["log"] + "\n" + str(error))[-MAX_LOG:]
+            if exit_code:
+                outputs = []
             with self.lock:
                 if exit_code and not issues:
                     issues.append(diagnostic("job_failed", "check_then_build", job["log"].strip()[-2000:]))
@@ -1951,12 +2336,11 @@ class Jobs:
                 if exit_code and job["command"] == "build":
                     job["retry_payload"] = payload.copy()
 
-    def artifact(self, name):
-        with self.lock:
-            reported = any(output["path"] == name for job in self.jobs.values() for output in job["outputs"])
-        if not reported:
-            raise ApiError(404, "Artifact not found")
-        return inside(WORKSPACE / name)
+    def artifact(self, name, identifier=None):
+        records = [self.registry.load(identifier)] if identifier is not None else self.registry.recent(MAX_JOBS)
+        if name and any(record and self.registry.matches(record, [name]) for record in records):
+            return inside(WORKSPACE / name)
+        raise ApiError(404, "Artifact not found or replaced by a newer export")
 
     def finish_active_job(self):
         with self.lock:
@@ -2115,6 +2499,10 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "GET" and url.path == "/api/narration/tts":
                 body = narration_for_tts(project_root(path), query.get("language", [None])[0])
                 self.reply(200, body, "application/x-ndjson; charset=utf-8")
+            elif method == "GET" and url.path == "/api/narration/tts/settings":
+                self.json(200, tts_settings(project_root(path), query))
+            elif method == "GET" and url.path in {"/api/narration/tts/health", "/api/narration/tts/voices"}:
+                self.json(200, call_tts_bridge(tts_settings(project_root(path), query), url.path.rsplit("/", 1)[1]))
             elif method == "GET" and (preview := re.fullmatch(r"/api/project/preview/audio/([a-f0-9]{32})", url.path)):
                 self.download(self.server.previews.audio(preview[1]))
             elif method == "GET" and (job := re.fullmatch(r"/api/jobs/([a-f0-9]{32})", url.path)):
@@ -2122,12 +2510,13 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "GET" and url.path == "/api/jobs":
                 self.json(200, self.server.jobs.list())
             elif method == "GET" and url.path == "/api/files":
-                self.download(self.server.jobs.artifact(path))
+                self.download(self.server.jobs.artifact(path, query.get("export", [None])[0]))
             elif method == "POST" and url.path in {"/api/jobs", "/api/projects", "/api/narration/import",
                                                    "/api/narration/replace", "/api/narration/pronunciation",
                                                    "/api/project/montage", "/api/project/regions",
                                                    "/api/project/regions/preview", "/api/project/package",
-                                                   "/api/project/quality"}:
+                                                   "/api/project/quality", "/api/narration/tts/synthesize",
+                                                   "/api/exports/import"}:
                 if self.headers.get_content_type() != "application/json":
                     raise ApiError(415, "Send application/json")
                 length = int(self.headers.get("Content-Length", "0"))
@@ -2135,7 +2524,21 @@ class Handler(BaseHTTPRequestHandler):
                 if not 0 < length <= limit * 1024:
                     raise ApiError(413, f"Expected a JSON body of up to {limit} KiB")
                 payload = json.loads(self.rfile.read(length))
-                if url.path == "/api/project/montage":
+                if url.path == "/api/exports/import":
+                    self.json(200, import_export_report(payload, self.server.jobs))
+                elif url.path == "/api/narration/tts/synthesize":
+                    if not isinstance(payload, dict):
+                        raise ValueError("Expected a JSON object")
+                    options = {key: [payload[key]] for key in ("language", "provider") if key in payload}
+                    profile = tts_settings(project_root(payload.get("path")), options)
+                    speech = call_tts_bridge(profile, "synthesize", payload)
+                    with tempfile.TemporaryDirectory() as work:
+                        output = Path(work) / "speech.mp3"
+                        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "wav", "-i", "pipe:0",
+                                        "-ac", "1", "-ar", "24000", "-c:a", "libmp3lame", "-q:a", "2", str(output)],
+                                       input=speech, check=True)
+                        self.reply(200, output.read_bytes(), "audio/mpeg", "speech.mp3")
+                elif url.path == "/api/project/montage":
                     self.json(200, save_montage(payload, self.server.jobs))
                 elif url.path == "/api/project/quality":
                     self.json(200, save_quality(payload, self.server.jobs))
