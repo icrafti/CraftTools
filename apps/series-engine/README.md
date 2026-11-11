@@ -207,6 +207,8 @@ python series-engine/series.py build output/seventh-car --youtube --language ru 
 
 ### MCP для агентов
 
+При подключении MCP передаёт [инструкции для агентов](AGENT_GUIDE.md). Этот же текст доступен как ресурс `series-engine://agent-guide`.
+
 Запустите Series Engine и установите зависимости MCP в Python 3.10 или новее.
 
 ```powershell

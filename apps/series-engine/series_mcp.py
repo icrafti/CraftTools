@@ -3,6 +3,7 @@
 import argparse
 import json
 from typing import Annotated
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
@@ -19,8 +20,14 @@ class Edit(TypedDict):
 
 
 def make_server(port: int) -> FastMCP:
-    server = FastMCP("Series Engine")
+    guide = Path(__file__).with_name("AGENT_GUIDE.md")
+    server = FastMCP("Series Engine", instructions=guide.read_text(encoding="utf-8"))
     opener = build_opener(ProxyHandler({}))
+
+    @server.resource("series-engine://agent-guide", mime_type="text/markdown")
+    def agent_guide() -> str:
+        """Current Series Engine workflow and maintenance instructions."""
+        return guide.read_text(encoding="utf-8")
 
     def call(endpoint, *, query=None, payload=None, timeout=120):
         address = f"http://127.0.0.1:{port}{endpoint}"
