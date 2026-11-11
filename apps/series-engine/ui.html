@@ -183,6 +183,20 @@
             <summary id="readiness-summary">Паспорт готовности</summary>
             <ul id="readiness-issues" class="small"></ul>
           </details>
+          <details id="tinyaudio-manual">
+            <summary>Генератор звуков TinyAudio</summary>
+            <label for="tinyaudio-description">Описание звука</label>
+            <textarea id="tinyaudio-description" rows="3" maxlength="1000"
+              placeholder="Например, тяжёлая дверь скрипит и захлопывается в пустом коридоре"
+              aria-describedby="tinyaudio-manual-hint"></textarea>
+            <p class="small hint" id="tinyaudio-manual-hint">Локальная генерация короткого звука, около 10 секунд.</p>
+            <button type="button" id="tinyaudio-generate" disabled>Сгенерировать звук</button>
+            <p class="small feedback" id="tinyaudio-message" role="status"></p>
+            <div id="tinyaudio-result" hidden>
+              <audio id="tinyaudio-player" controls preload="metadata" aria-label="Сгенерированный звук" style="width:100%"></audio>
+              <a id="tinyaudio-download" download="tinyaudio.mp3">Сохранить MP3</a>
+            </div>
+          </details>
         </section>
         <section class="step" aria-labelledby="edition-heading">
           <div class="heading"><span class="step-no">02</span><h2 id="edition-heading">Версии и языки</h2></div>
@@ -334,6 +348,7 @@
               <button type="button" id="sound-map-check">Показать звуковую карту</button>
               <p class="small feedback" id="sound-map-message" role="status"></p>
               <ul id="sound-map-segments" hidden></ul>
+              <label><input type="checkbox" id="tinyaudio-scenes"> Генерировать звуки по сценам (TinyAudio)</label>
             </div>
           </details>
           <details id="montage-editor" hidden>
@@ -384,7 +399,7 @@
           </details>
           <details id="sync-panel" hidden>
             <summary>Синхронизация дубляжей</summary>
-            <button type="button" id="sync-check">Рассчитать темп по блокам</button>
+            <button type="button" id="sync-check">Найти блоки для адаптации</button>
             <button type="button" id="sync-compare">Сравнить основные языки</button>
             <p id="master-compare-message" class="small feedback" role="status"></p>
             <ul id="master-compare-results" class="small"></ul>
@@ -395,7 +410,7 @@
               <label for="sync-source-audio">Исходный блок</label>
               <audio id="sync-source-audio" controls style="width:100%"></audio>
               <div id="sync-adjusted" hidden>
-                <label for="sync-adjusted-audio">После подгонки</label>
+                <label for="sync-adjusted-audio">В окне основной дорожки</label>
                 <audio id="sync-adjusted-audio" controls style="width:100%"></audio>
               </div>
             </div>
@@ -718,7 +733,7 @@
       byId("sync-panel").hidden = !loaded || !youtube;
       byId("export-mix").hidden = !loaded;
       byId("mix-enabled").disabled = disabled || !loaded;
-      for (const id of ["mix-music", "mix-ambience", "mix-sound-map"]) {
+      for (const id of ["mix-music", "mix-ambience", "mix-sound-map", "tinyaudio-scenes"]) {
         byId(id).disabled = disabled || !loaded || !byId("mix-enabled").checked;
       }
       updateSoundMapControls(loaded, disabled);
@@ -1965,6 +1980,7 @@
           byId("mix-music").value = "";
           byId("mix-ambience").value = "";
           byId("mix-sound-map").checked = false;
+          byId("tinyaudio-scenes").checked = false;
           updateMixFields();
         }
         for (const [id, values] of [["export-chapter", project.chapters], ["cue-start", project.cues], ["cue-end", project.cues]]) {
@@ -2265,6 +2281,47 @@
     }
     byId("mix-enabled").addEventListener("change", updateMixFields);
 
+    const tinyaudioDescription = byId("tinyaudio-description");
+    const tinyaudioButton = byId("tinyaudio-generate");
+    const tinyaudioPlayer = byId("tinyaudio-player");
+    const tinyaudioDownload = byId("tinyaudio-download");
+    const tinyaudioResult = byId("tinyaudio-result");
+    const tinyaudioMessage = byId("tinyaudio-message");
+    let tinyaudioRunning = false;
+
+    function updateTinyAudioButton() {
+      tinyaudioButton.disabled = tinyaudioRunning || !tinyaudioDescription.value.trim();
+    }
+
+    tinyaudioDescription.addEventListener("input", updateTinyAudioButton);
+    tinyaudioButton.addEventListener("click", async () => {
+      const prompt = tinyaudioDescription.value.trim();
+      if (!prompt || tinyaudioRunning) return;
+      tinyaudioRunning = true;
+      updateTinyAudioButton();
+      message(tinyaudioMessage, "Генерируем звук на этом компьютере…");
+      try {
+        const response = await fetch("/api/audio/tinyaudio", {
+          method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({prompt})
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || "Не удалось сгенерировать звук.");
+        }
+        const url = URL.createObjectURL(await response.blob());
+        if (tinyaudioPlayer.src.startsWith("blob:")) URL.revokeObjectURL(tinyaudioPlayer.src);
+        tinyaudioPlayer.src = url;
+        tinyaudioDownload.href = url;
+        tinyaudioResult.hidden = false;
+        message(tinyaudioMessage, "Звук готов.");
+      } catch (error) {
+        message(tinyaudioMessage, error.message, true);
+      } finally {
+        tinyaudioRunning = false;
+        updateTinyAudioButton();
+      }
+    });
+
     let soundMapLanguage = null;
     let soundMapRequest = 0;
     let soundMapLoading = false;
@@ -2372,7 +2429,7 @@
       const feedback = byId("sync-listen-message");
       panel.hidden = false;
       byId("sync-listen-title").textContent = languageName(language) + " · " + block.id;
-      byId("sync-adjusted").hidden = block.status === "out_of_range";
+      byId("sync-adjusted").hidden = block.status === "rewrite";
       panel.scrollIntoView({block: "nearest"});
       message(feedback, "Готовим фрагменты…");
       async function loadAudio(version, player) {
@@ -2384,10 +2441,10 @@
       }
       try {
         const downloads = [loadAudio("source", sourceAudio)];
-        if (block.status !== "out_of_range") downloads.push(loadAudio("adjusted", adjustedAudio));
+        if (block.status !== "rewrite") downloads.push(loadAudio("adjusted", adjustedAudio));
         await Promise.all(downloads);
-        if (!request.signal.aborted) message(feedback, block.status === "out_of_range"
-          ? "Этот темп выходит за пределы 0,5–2×. Доступен исходный блок." : "");
+        if (!request.signal.aborted) message(feedback, block.status === "rewrite"
+          ? "Сократите текст и переозвучьте блок в естественном темпе." : "");
       } catch (error) {
         if (!request.signal.aborted) message(feedback, error.message, true);
       }
@@ -2395,11 +2452,48 @@
 
     function showSyncReport(report, path) {
       const results = byId("sync-results");
-      const statuses = {ok: "В норме", noticeable: "Изменение >20%", out_of_range: "Нужна переозвучка", missing: "Нет блока"};
+      const statuses = {ok: "Помещается", rewrite: "Сократить и переозвучить", missing: "Нет блока"};
       for (const edition of report.languages) {
         const title = document.createElement("h3");
         title.textContent = languageName(edition.language) + (edition.ready ? " · готово" : " · требуется правка");
         results.append(title);
+        if (edition.adaptation?.length) {
+          const copy = document.createElement("button");
+          copy.type = "button";
+          copy.textContent = "Скопировать задание на адаптацию";
+          const feedback = document.createElement("p");
+          feedback.setAttribute("role", "status");
+          copy.addEventListener("click", async () => {
+            const instructions = [
+              `Сократи реплики для дубляжа на языке ${languageName(edition.language)}.`,
+              "Сохрани смысл, голос персонажа, идентификаторы реплик и их порядок.",
+              "Указано окно всего блока. После переозвучки проверь, что блок помещается при естественном темпе речи.",
+              'Верни JSON-массив только изменённых реплик в формате [{"cue":"G01-001:1","text":"Новая реплика"}].',
+              "",
+            ];
+            const blocks = edition.adaptation.flatMap((item) => [
+              `${item.block} · окно ${item.target_seconds.toFixed(2)} с · запись ${item.recorded_seconds.toFixed(2)} с` +
+                (item.suggested_letters == null ? "" : ` · ориентир по буквам: ${item.suggested_letters}`),
+              ...item.utterances.map(({cue, text}) => `${cue} — ${text ?? ""}`),
+              "",
+            ]);
+            try {
+              await navigator.clipboard.writeText([...instructions, ...blocks].join("\n"));
+              message(feedback, "Задание скопировано.");
+            } catch {
+              message(feedback, "Не удалось скопировать задание.", true);
+            }
+          });
+          results.append(copy, feedback);
+          if (edition.editable === false) {
+            const hint = document.createElement("p");
+            hint.className = "small";
+            hint.textContent = "Чтобы переозвучить реплики из приложения, сначала импортируйте дорожку как отдельные реплики MP3.";
+            results.append(hint);
+          } else if (edition.revision) {
+            showAdaptationEditor(results, path, report.master_language, edition);
+          }
+        }
         for (const issue of edition.issues) {
           const warning = document.createElement("p");
           warning.textContent = issue.message || "Не совпадает порядок или состав блоков."
@@ -2412,23 +2506,24 @@
         wrapper.style.overflowX = "auto";
         const table = document.createElement("table");
         const heading = table.createTHead().insertRow();
-        for (const text of ["Блок", "Исходная, с", "Целевая, с", "Темп", "Статус", "Озвучка"]) {
+        for (const text of ["Блок", "Запись, с", "Окно, с", "Лишнее, с", "Статус", "Озвучка"]) {
           const cell = document.createElement("th");
           cell.scope = "col";
           cell.textContent = text;
           heading.append(cell);
         }
         const body = table.createTBody();
-        for (const block of edition.blocks) {
+        const priority = {rewrite: 0, missing: 1, ok: 2};
+        for (const block of [...edition.blocks].sort((a, b) => priority[a.status] - priority[b.status])) {
           const row = body.insertRow();
           for (const text of [block.id, block.source_duration?.toFixed(2) ?? "–",
-            block.target_duration.toFixed(2), block.tempo == null ? "–" : block.tempo.toFixed(2) + "×",
+            block.target_duration.toFixed(2), block.overrun?.toFixed(2) ?? "–",
             statuses[block.status]]) row.insertCell().textContent = text;
           const action = row.insertCell();
           if (block.status !== "missing") {
             const listen = document.createElement("button");
             listen.type = "button";
-            listen.textContent = block.status === "out_of_range" ? "Исходник" : "Сравнить";
+            listen.textContent = block.status === "rewrite" ? "Исходник" : "Сравнить";
             listen.setAttribute("aria-label", listen.textContent + " " + block.id);
             listen.addEventListener("click", () => listenToBlock(path, report.master_language, edition.language, block));
             action.append(listen);
@@ -2439,11 +2534,97 @@
       }
     }
 
-    byId("sync-check").addEventListener("click", async () => {
+    function showAdaptationEditor(results, path, master, edition) {
+      const section = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "Применить адаптированные реплики";
+      const label = document.createElement("label");
+      const draft = document.createElement("textarea");
+      draft.id = "sync-adaptation-" + edition.language;
+      draft.rows = 5;
+      draft.placeholder = '[{"cue":"G01-001:1","text":"Новая реплика"}]';
+      label.htmlFor = draft.id;
+      label.textContent = "Новые формулировки (JSON)";
+      const providerLabel = document.createElement("label");
+      const provider = document.createElement("select");
+      provider.id = "sync-adaptation-provider-" + edition.language;
+      providerLabel.htmlFor = provider.id;
+      providerLabel.textContent = "Голосовой движок";
+      for (const [value, title] of [["", "По настройкам проекта"], ["microsoft", "Microsoft (Windows)"],
+        ["qwen", "Qwen"], ["omnivoice", "OmniVoice"]]) {
+        provider.add(new Option(title, value));
+      }
+      const apply = document.createElement("button");
+      apply.type = "button";
+      apply.textContent = "Переозвучить изменённые реплики";
+      const feedback = document.createElement("p");
+      feedback.className = "small feedback";
+      feedback.setAttribute("role", "status");
+      let running = false;
+      function updateApply() {
+        apply.disabled = running || !draft.value.trim();
+      }
+      draft.addEventListener("input", updateApply);
+      updateApply();
+      apply.addEventListener("click", async () => {
+        if (running || loading || active || project?.path !== path || masterLanguage.value !== master) return;
+        let changes;
+        try {
+          changes = JSON.parse(draft.value);
+          if (!Array.isArray(changes) || !changes.length || changes.some((row) =>
+            !row || typeof row.cue !== "string" || !row.cue.trim()
+              || typeof row.text !== "string" || !row.text.trim()
+          )) throw new Error();
+        } catch {
+          message(feedback, "Вставьте JSON-массив с непустыми полями cue и text.", true);
+          return;
+        }
+        running = true;
+        draft.disabled = provider.disabled = true;
+        updateApply();
+        message(feedback, "Переозвучиваем изменённые реплики и проверяем длительность…");
+        try {
+          const payload = {path, master_language: master, language: edition.language, revision: edition.revision, changes};
+          if (provider.value) payload.provider = provider.value;
+          const result = await api("/api/project/sync/adapt", {
+            method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload),
+          });
+          if (!result.applied) {
+            const details = result.overruns.map((row) =>
+              `${row.block} — ${row.recorded_seconds.toFixed(2)} с при окне ${row.target_seconds.toFixed(2)} с`);
+            message(feedback, "Сократите эти блоки и повторите. Черновик сохранён в поле ввода. " + details.join(", "), true);
+            return;
+          }
+          if (project?.path === path && masterLanguage.value === master) {
+            clearReplacement();
+            resetPreview();
+            resetRepeats();
+            resetChapters();
+            resetDiagnostics();
+            resetPublicationPackage();
+            byId("master-compare-results").replaceChildren();
+            message(byId("master-compare-message"));
+            await checkSyncReport(`Переозвучено реплик: ${result.changed}.`);
+          }
+        } catch (error) {
+          message(feedback, error.message, true);
+        } finally {
+          running = false;
+          draft.disabled = provider.disabled = false;
+          updateApply();
+        }
+      });
+      section.append(summary, label, draft, providerLabel, provider, apply, feedback);
+      results.append(section);
+    }
+
+    let syncReportRequest = 0;
+    async function checkSyncReport(applied = "") {
       const current = project;
       const feedback = byId("sync-message");
       const button = byId("sync-check");
       const master = masterLanguage.value;
+      const request = ++syncReportRequest;
       byId("sync-results").replaceChildren();
       resetSyncAudio();
       if (!current || !master || loading) return;
@@ -2453,17 +2634,20 @@
       try {
         const params = new URLSearchParams({path: current.path, master_language: master, ...exportFragment()});
         for (const language of languages) params.append("language", language);
-        message(feedback, "Проверяем озвучку и рассчитываем темп…");
+        message(feedback, "Проверяем длительность записей по окнам основной дорожки…");
         const report = await api("/api/project/sync?" + params);
-        if (current !== project) return;
-        message(feedback, `Основной язык: ${languageName(master)}. Длительность: ${report.duration.toFixed(2)} с.`);
+        if (request !== syncReportRequest || current !== project || master !== masterLanguage.value) return;
+        message(feedback, `${applied} Основной язык: ${languageName(master)}. Длительность: ${report.duration.toFixed(2)} с.`.trim());
         showSyncReport(report, current.path);
       } catch (error) {
-        if (current === project) message(feedback, error.message, true);
+        if (request === syncReportRequest && current === project && master === masterLanguage.value) {
+          message(feedback, error.message, true);
+        }
       } finally {
-        button.disabled = false;
+        if (request === syncReportRequest) button.disabled = false;
       }
-    });
+    }
+    byId("sync-check").addEventListener("click", () => checkSyncReport());
 
     byId("sync-compare").addEventListener("click", async () => {
       const current = project;
@@ -2482,13 +2666,13 @@
         const report = await api("/api/project/sync/masters?" + params);
         if (current !== project) return;
         message(feedback, report.recommended
-          ? "По темпу лучше подходит: " + languageName(report.recommended)
+          ? "По длительности блоков подходит: " + languageName(report.recommended)
           : "Каждый вариант требует исправлений перед сборкой.");
         for (const row of report.candidates) {
           const item = document.createElement("li");
           const duration = row.duration == null ? "нет тайминга" : row.duration.toFixed(2) + " с";
-          const mean = row.mean_tempo_change == null ? "–" : (100 * row.mean_tempo_change).toFixed(1) + "%";
-          item.textContent = `${languageName(row.language)} · ${duration} · заметных изменений: ${row.noticeable_blocks} · за пределами 0,5–2×: ${row.out_of_range_blocks} · среднее изменение: ${mean}`;
+          const overrun = row.total_overrun?.toFixed(2) ?? "–";
+          item.textContent = `${languageName(row.language)} · ${duration} · блоков на адаптацию: ${row.rewrite_blocks} · превышение суммарно: ${overrun} с`;
           for (const issue of row.issues) {
             const warning = document.createElement("div");
             warning.textContent = languageName(issue.language) + ": "
@@ -2541,6 +2725,7 @@
           const ambience = byId("mix-ambience").value.trim();
           if (music) request.music = music;
           if (ambience) request.ambience = ambience;
+          if (byId("tinyaudio-scenes").checked) request.tinyaudio = "scenes";
         }
       }
       return request;
@@ -2609,7 +2794,7 @@
     }
     const packageSettings = "#path, #languages input, #master-language, [name=mode], [name=resolution], " +
       "#export-scope, #export-aspect, #export-chapter, #cue-start, #cue-end, " +
-      "#mix-enabled, #mix-music, #mix-ambience, #mix-sound-map";
+      "#mix-enabled, #mix-music, #mix-ambience, #mix-sound-map, #tinyaudio-scenes";
     form.addEventListener("change", (event) => {
       if (event.target.matches(packageSettings)) resetPublicationPackage();
     });

@@ -51,6 +51,48 @@ class ExportTest(unittest.TestCase):
         with self.assertRaises(server.ApiError):
             restarted.artifact(name, job["id"])
 
+    def test_natural_dub_reports_only_overruns(self):
+        master = [("A", 0, 50), ("B", 50, 100)]
+        source = [("A", 0, 40), ("B", 40, 95)]
+        report = server.dub_report("ru", master, source, None)
+        self.assertFalse(report["ready"])
+        self.assertEqual([row["status"] for row in report["blocks"]], ["ok", "rewrite"])
+        self.assertEqual(report["blocks"][1]["overrun"], 5 / server.series.FPS)
+        self.assertEqual(server.series.dub_block_filter(10, 30, 40),
+                         "atrim=start_sample=10:end_sample=30,asetpts=PTS-STARTPTS,"
+                         "apad=whole_len=40,atrim=end_sample=40")
+        with self.assertRaisesRegex(ValueError, "master window"):
+            server.series.dub_block_filter(10, 51, 40)
+        with self.assertRaisesRegex(ValueError, r"\bB \(\+0\.20s\)"):
+            server.series.youtube_dub("ru", master, [
+                {"id": "A", "start": 0, "end": 40 / server.series.FPS},
+                {"id": "B", "start": 40 / server.series.FPS, "end": 95 / server.series.FPS},
+            ], None, self.root, True)
+
+    def test_sync_brief_estimates_words_from_recorded_duration(self):
+        target = [{"id": "A", "cue": "A:1", "start": 0, "end": 2}]
+        source = [{"id": "A", "cue": "A:1", "start": 0, "end": 3}]
+        rows = [{"text": "Этот блок сейчас состоит из шести слов."}]
+        with patch.object(server, "sync_timeline", return_value=target), patch.object(
+            server, "editable_narration", return_value=(None, rows, source, None, "revision")
+        ):
+            result = server.sync_report(self.root, {"language": ["ru"]})
+        self.assertEqual(result["duration"], 2)
+        self.assertEqual(result["languages"][0]["adaptation"][0]["suggested_words"], 4)
+
+    def test_subtitles_keep_original_cue_lengths_in_master_window(self):
+        source = [
+            {"id": "A", "cue": "A:1", "start": 0, "end": 0.8},
+            {"id": "A", "cue": "A:2", "start": 0.8, "end": 1.6},
+            {"id": "B", "cue": "B:1", "start": 1.6, "end": 2.6},
+        ]
+        master = [{"id": "A", "start": 0, "end": 2}, {"id": "B", "start": 2, "end": 4}]
+        script = [{"text": text} for text in ("First.", "Second.", "Third.")]
+        with patch.object(server, "editable_narration", return_value=(None, script, source, None, "")):
+            result = server.subtitle_export(self.root, {"language": ["ru"], "master_language": ["en"]}, master)
+        self.assertIn(b"00:00:00,800 --> 00:00:01,600", result[2])
+        self.assertIn(b"00:00:02,000 --> 00:00:03,000", result[2])
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg and FFprobe required")
     def test_mp3_source_sample_count_preserves_the_wav_clock(self):
         source = self.root / "source.wav"
@@ -153,6 +195,17 @@ class ExportTest(unittest.TestCase):
             self.fail("Export did not finish")
 
         settings = {"path": "show", "command": "build", "youtube": True, "resolution": "360p"}
+        def fake_tinyaudio(tracks):
+            [(target, description)] = tracks.items()
+            self.assertEqual(description, "Rain on glass")
+            target.write_bytes(b"test-mp3")
+
+        with patch.object(server.tinyaudio_bridge, "synthesize", side_effect=fake_tinyaudio):
+            request = Request(base + "/api/audio/tinyaudio", json.dumps({"prompt": "Rain on glass"}).encode(),
+                              {"Content-Type": "application/json"})
+            with urlopen(request, timeout=10) as response:
+                self.assertEqual(response.headers.get_content_type(), "audio/mpeg")
+                self.assertEqual(response.read(), b"test-mp3")
         with patch.object(server, "call_tts_bridge", return_value=silent_wav()):
             request = Request(base + "/api/narration/tts/synthesize",
                               json.dumps({"path": "show", "provider": "qwen", "language": "en",
@@ -169,6 +222,9 @@ class ExportTest(unittest.TestCase):
             manifest = self.root / imported["manifest"]
             rows = json.loads(manifest.read_text(encoding="utf-8"))
             write_json(manifest, [{**rows[0], "text": row["text"]}])
+        dry = run({**settings, "mix": True, "tinyaudio": "scenes", "dry_run": True})
+        self.assertIn("TinyAudio: 0 scene effects", dry["log"])
+        self.assertFalse(list(self.root.rglob(".tinyaudio")))
         original = run(settings)
         self.assertFalse(list(self.root.rglob("*.wav")))
         self.assertEqual(sorted(Path(item["path"]).suffix for item in original["outputs"]),

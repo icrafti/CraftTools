@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import uuid
+import unicodedata
 import wave
 import webbrowser
 from collections import deque
@@ -25,12 +26,15 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 import series
 import build_history
 import tts_bridge
+import dub_adaptation
+import tinyaudio_bridge
 from export_registry import ExportRegistry
 import quality
 
 
 ENGINE = Path(__file__).resolve().parent
 WORKSPACE = ENGINE.parent
+TINYAUDIO_MANUAL_LOCK = threading.Lock()
 LANGUAGE = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
 MIME_TYPES = {
     ".mp4": "video/mp4",
@@ -837,13 +841,13 @@ def dub_report(code, target, source, window):
         block = {"id": identifier, "target_start": start / series.FPS,
                  "target_duration": (end - start) / series.FPS, "status": "missing"}
         if original:
-            tempo = series.block_tempo(original, row)
+            overrun = series.block_overrun(original, row)
             block.update(source_start=original[1] / series.FPS,
                          source_duration=(original[2] - original[1]) / series.FPS,
-                         tempo=tempo, status=series.tempo_status(tempo))
+                         overrun=overrun / series.FPS, status="rewrite" if overrun else "ok")
         blocks.append(block)
     return {"language": code, "blocks": blocks, "issues": issues,
-            "ready": not issues and all(block["status"] != "out_of_range" for block in blocks)}
+            "ready": not issues and all(block["status"] == "ok" for block in blocks)}
 
 
 def sync_report(root, query):
@@ -862,12 +866,38 @@ def sync_report(root, query):
     reports = []
     for code in selected:
         try:
-            source = series.blocks(sync_timeline(root, code, languages[code]))
+            _, rows, source_entries, legacy, revision = editable_narration(root, code)
+            source = series.blocks(source_entries)
         except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError) as error:
             reports.append({"language": code, "blocks": [], "ready": False,
                             "issues": [{"code": "invalid_narration", "message": str(error)}]})
         else:
-            reports.append(dub_report(code, target, source, window))
+            report = dub_report(code, target, source, window)
+            needs_rewrite = {block["id"]: [] for block in report["blocks"] if block["status"] == "rewrite"}
+            for row, entry in zip(rows, source_entries, strict=True):
+                cue = series.cue(entry)
+                identifier = entry.get("id") or cue.rsplit(":", 1)[0]
+                if identifier in needs_rewrite:
+                    needs_rewrite[identifier].append({"cue": cue, "text": row.get("text") or entry.get("text")})
+            adaptation = []
+            for block in report["blocks"]:
+                if block["id"] not in needs_rewrite:
+                    continue
+                utterances = needs_rewrite[block["id"]]
+                target_seconds, recorded_seconds = block["target_duration"], block["source_duration"]
+                words = sum(len(re.findall(r"\b[^\W_]+(?:[-’'][^\W_]+)*\b", row["text"] or ""))
+                            for row in utterances)
+                # Use this voice's observed pace in the translated block and leave a little room for pauses.
+                estimate = max(1, int(words * target_seconds / recorded_seconds * 0.95)) if words > 1 else None
+                letters = sum(char.isalpha() for row in utterances
+                              for char in unicodedata.normalize("NFC", row["text"] or ""))
+                letter_estimate = max(1, int(letters * target_seconds / recorded_seconds * 0.95)) if letters else None
+                adaptation.append({"block": block["id"], "target_seconds": target_seconds,
+                                   "recorded_seconds": recorded_seconds,
+                                   "suggested_words": estimate, "suggested_letters": letter_estimate,
+                                   "utterances": utterances})
+            report.update(revision=revision, editable=legacy is None, adaptation=adaptation)
+            reports.append(report)
     start, end = window or (0, target[-1][2])
     return {"master_language": master, "start": start / series.FPS, "duration": (end - start) / series.FPS,
             "languages": reports}
@@ -893,7 +923,7 @@ def compare_masters(root, query):
     candidates = []
     for code in selected:
         candidate = {"language": code, "ready": False, "issues": [], "duration": None,
-                     "noticeable_blocks": 0, "out_of_range_blocks": 0, "mean_tempo_change": None}
+                     "rewrite_blocks": 0, "total_overrun": 0}
         candidates.append(candidate)
         try:
             if code in errors:
@@ -905,7 +935,6 @@ def compare_masters(root, query):
             continue
         start, end = window or (0, target[-1][2])
         candidate["duration"] = (end - start) / series.FPS
-        changes = []
         for dub in selected:
             if dub == code:
                 continue
@@ -915,15 +944,12 @@ def compare_masters(root, query):
             report = dub_report(dub, target, timings[dub][1], window)
             candidate["issues"].extend({"language": dub, **issue} for issue in report["issues"])
             for block in report["blocks"]:
-                if "tempo" in block:
-                    changes.append(abs(block["tempo"] - 1))
-                candidate["noticeable_blocks"] += block["status"] == "noticeable"
-                candidate["out_of_range_blocks"] += block["status"] == "out_of_range"
-        candidate["mean_tempo_change"] = sum(changes) / len(changes) if changes else None
-        candidate["ready"] = not candidate["issues"] and not candidate["out_of_range_blocks"]
+                candidate["rewrite_blocks"] += block["status"] == "rewrite"
+                candidate["total_overrun"] += block.get("overrun", 0)
+        candidate["ready"] = not candidate["issues"] and not candidate["rewrite_blocks"]
     source = config.get("source_language")
-    candidates.sort(key=lambda item: (not item["ready"], len(item["issues"]), item["out_of_range_blocks"],
-                                      item["noticeable_blocks"], item["mean_tempo_change"] or 0,
+    candidates.sort(key=lambda item: (not item["ready"], len(item["issues"]), item["rewrite_blocks"],
+                                      item["total_overrun"],
                                       item["language"] != source, item["language"]))
     return {"recommended": candidates[0]["language"] if candidates[0]["ready"] else None,
             "candidates": candidates}
@@ -949,19 +975,17 @@ def sync_audio(root, query, work):
         root / settings.get("audio", f"{language}/narration.wav"), root
     )
     target = source
-    tempo = 1
     if version == "adjusted":
         master_entries = sync_timeline(root, master, config["languages"][master])
         target = next((row for row in series.blocks(master_entries) if row[0] == identifier), None)
         if target is None:
             raise ApiError(404, "Block not found in the master")
-        tempo = series.block_tempo(source, target)
-        if series.tempo_status(tempo) == "out_of_range":
-            raise ApiError(422, "Tempo falls outside 0.5–2×; rerecord this block")
+        if series.block_overrun(source, target):
+            raise ApiError(422, "Реплика длиннее окна мастера. Сократите текст и переозвучьте блок.")
     rate = 48000
     samples = rate // series.FPS
     block_filter = series.dub_block_filter(source[1] * samples, source[2] * samples,
-                                          (target[2] - target[1]) * samples, tempo)
+                                          (target[2] - target[1]) * samples)
     output = work / "block.mp3"
     series.call("ffmpeg", "-nostdin", "-v", "error", "-i", str(audio), "-map", "0:a:0",
                 "-af", f"aresample={rate},{block_filter}", "-c:a", "libmp3lame", "-b:a", "192k", str(output))
@@ -1112,8 +1136,8 @@ def subtitle_export(root, query, master_entries=None):
         raise ValueError("Narration block IDs and order must match the master")
     timing = {}
     for original, adjusted in zip(source, target):
-        if series.tempo_status(series.block_tempo(original, adjusted)) == "out_of_range":
-            raise ValueError(f"Block {original[0]} requires a tempo outside the supported range")
+        if series.block_overrun(original, adjusted):
+            raise ValueError(f"Block {original[0]} needs shorter wording and a new recording")
         timing[original[0]] = (original, adjusted)
     first, last = window or (0, target[-1][2])
     ms_per_frame = 1000 / series.FPS
@@ -1124,9 +1148,8 @@ def subtitle_export(root, query, master_entries=None):
         text = row.get("text")
         if identifier not in timing or not isinstance(text, str) or not text.strip():
             continue
-        (_, source_start, source_end), (_, start, end) = timing[identifier]
-        factor = (end - start) / (source_end - source_start)
-        left, right = [start + (round(entry[field] * series.FPS) - source_start) * factor
+        (_, source_start, _), (_, start, _) = timing[identifier]
+        left, right = [start + round(entry[field] * series.FPS) - source_start
                        for field in ("start", "end")]
         begin = round((max(left, first) - first) * ms_per_frame)
         finish = round((min(right, last) - first) * ms_per_frame)
@@ -1672,7 +1695,7 @@ def job_command(payload):
         raise ValueError("Expected a JSON object")
     allowed = {"path", "command", "languages", "youtube", "resolution", "aspect", "dry_run", "master_language",
                "chapter", "cue_start", "cue_end", "mix", "music", "ambience", "sound_map", "resume",
-               "require_complete", "mux_dubs", "sidecars"}
+               "require_complete", "mux_dubs", "sidecars", "tinyaudio"}
     if unknown := payload.keys() - allowed:
         raise ValueError(f"Unknown fields: {', '.join(sorted(unknown))}")
     root = project_root(payload.get("path"))
@@ -1687,6 +1710,7 @@ def job_command(payload):
     require_complete = payload.get("require_complete", False)
     mix = payload.get("mix", False)
     sound_map = payload.get("sound_map", False)
+    tinyaudio = payload.get("tinyaudio")
     resume = payload.get("resume", command == "build")
     languages = payload.get("languages", [])
     if command not in ("scan", "build"):
@@ -1707,8 +1731,10 @@ def job_command(payload):
     if resume and command != "build":
         raise ValueError("resume requires build")
     audio_fields = {key: payload[key] for key in ("music", "ambience") if key in payload}
-    if (mix and command != "build") or ((audio_fields or sound_map) and not mix):
-        raise ValueError("mix requires build; music, ambience and sound_map require mix")
+    if tinyaudio is not None and tinyaudio != "scenes":
+        raise ValueError("TinyAudio поддерживает автоматическую генерацию звуков по сценам.")
+    if (mix and command != "build") or ((audio_fields or sound_map or tinyaudio) and not mix):
+        raise ValueError("mix requires build; music, ambience, sound_map and TinyAudio require mix")
     if mix:
         if not all(isinstance(value, str) for value in audio_fields.values()):
             raise ValueError("Music and ambience paths must be strings")
@@ -1740,7 +1766,7 @@ def job_command(payload):
     selected = languages or list(config["languages"])
     filename = "video-360p.mp4" if resolution == "360p" else "video.mp4"
     work = inside(series.mix_output(series.aspect_output(series.fragment_output(output, fragment), aspect),
-                                    mix, sound_map))
+                                    mix, sound_map, tinyaudio))
     if youtube:
         source = config.get("source_language")
         master = payload.get("master_language", source)
@@ -1773,6 +1799,8 @@ def job_command(payload):
             arguments.extend(f"--{key}={value}" for key, value in audio_fields.items())
             if sound_map:
                 arguments.append("--sound-map")
+            if tinyaudio:
+                arguments.append(f"--tinyaudio={tinyaudio}")
     if dry_run:
         arguments.append("--dry-run")
     if youtube:
@@ -2516,16 +2544,31 @@ class Handler(BaseHTTPRequestHandler):
                                                    "/api/project/montage", "/api/project/regions",
                                                    "/api/project/regions/preview", "/api/project/package",
                                                    "/api/project/quality", "/api/narration/tts/synthesize",
-                                                   "/api/exports/import"}:
+                                                   "/api/exports/import", "/api/audio/tinyaudio", "/api/project/sync/adapt"}:
                 if self.headers.get_content_type() != "application/json":
                     raise ApiError(415, "Send application/json")
                 length = int(self.headers.get("Content-Length", "0"))
-                limit = 256 if url.path == "/api/narration/pronunciation" else 16
+                limit = {"/api/narration/pronunciation": 256, "/api/project/sync/adapt": 1024}.get(url.path, 16)
                 if not 0 < length <= limit * 1024:
                     raise ApiError(413, f"Expected a JSON body of up to {limit} KiB")
                 payload = json.loads(self.rfile.read(length))
                 if url.path == "/api/exports/import":
                     self.json(200, import_export_report(payload, self.server.jobs))
+                elif url.path == "/api/project/sync/adapt":
+                    self.json(200, dub_adaptation.apply(sys.modules[__name__], payload, self.server.jobs))
+                elif url.path == "/api/audio/tinyaudio":
+                    if not isinstance(payload, dict):
+                        raise ValueError("Expected a JSON object")
+                    prompt = tinyaudio_bridge.prompt_text(payload.get("prompt"))
+                    if not TINYAUDIO_MANUAL_LOCK.acquire(blocking=False):
+                        raise ApiError(409, "TinyAudio уже генерирует звук. Дождитесь завершения.")
+                    try:
+                        with tempfile.TemporaryDirectory() as work:
+                            output = Path(work) / "tinyaudio.mp3"
+                            tinyaudio_bridge.synthesize({output: prompt})
+                            self.reply(200, output.read_bytes(), "audio/mpeg", output.name)
+                    finally:
+                        TINYAUDIO_MANUAL_LOCK.release()
                 elif url.path == "/api/narration/tts/synthesize":
                     if not isinstance(payload, dict):
                         raise ValueError("Expected a JSON object")

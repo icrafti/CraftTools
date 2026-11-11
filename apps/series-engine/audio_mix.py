@@ -148,11 +148,13 @@ def render_location_bed(output, frames, fps, segments):
         staged.replace(output)
 
 
-def mix_audio(voice, output, frames, fps, music=None, ambience=None, offset_frames=0, *, location_bed=None):
+def mix_audio(voice, output, frames, fps, music=None, ambience=None, offset_frames=0, *,
+              location_bed=None, effects_bed=None):
     """Write stereo PCM at the specified video duration, preserving the bed offset."""
     if frames <= 0 or offset_frames < 0 or fps <= 0 or SAMPLE_RATE % fps:
         raise ValueError("Invalid frame boundaries for the audio mix")
-    if output.resolve() in {path.resolve() for path in (voice, music, ambience, location_bed) if path is not None}:
+    inputs = (voice, music, ambience, location_bed, effects_bed)
+    if output.resolve() in {path.resolve() for path in inputs if path is not None}:
         raise ValueError("Audio mix output must differ from the input tracks")
     samples_per_frame = SAMPLE_RATE // fps
     length = frames * samples_per_frame
@@ -161,9 +163,11 @@ def mix_audio(voice, output, frames, fps, music=None, ambience=None, offset_fram
     arguments = ["-v", "error", "-y", "-i", str(voice)]
     audio_format = f"aresample={SAMPLE_RATE},aformat=channel_layouts=stereo"
     trim = f"apad=whole_len={length},atrim=end_sample={length}"
-    beds = [(path, level, True) for path, level in ((music, MUSIC_DB), (ambience, AMBIENCE_DB)) if path is not None]
-    if location_bed is not None:
-        beds.append((location_bed, AMBIENCE_DB, False))
+    beds = [(path, level, loop) for path, level, loop in (
+        (music, MUSIC_DB, True), (ambience, AMBIENCE_DB, True),
+        (location_bed, AMBIENCE_DB, False),
+        (effects_bed, -18, False),
+    ) if path is not None]
     graph = [f"[0:a]{audio_format},{trim},volume={gain:.6f}dB[voice]"]
     for index, (path, level, loop) in enumerate(beds, 1):
         arguments.extend(["-protocol_whitelist", "file", "-format_whitelist", BED_FORMATS])
