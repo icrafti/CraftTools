@@ -28,6 +28,7 @@ import build_history
 import tts_bridge
 import dub_adaptation
 import tinyaudio_bridge
+import stable_audio
 from export_registry import ExportRegistry
 import quality
 
@@ -1115,7 +1116,7 @@ def subtitle_timestamp(milliseconds, separator):
     return f"{hours:02}:{minutes:02}:{seconds:02}{separator}{ms:03}"
 
 
-def subtitle_export(root, query, master_entries=None):
+def subtitle_export(root, query, master_entries=None, fit_dubs=False):
     config = project_config(root)
     language = query.get("language", [config.get("source_language")])[0]
     master = query.get("master_language", [language])[0]
@@ -1136,7 +1137,7 @@ def subtitle_export(root, query, master_entries=None):
         raise ValueError("Narration block IDs and order must match the master")
     timing = {}
     for original, adjusted in zip(source, target):
-        if series.block_overrun(original, adjusted):
+        if series.block_overrun(original, adjusted) and not fit_dubs:
             raise ValueError(f"Block {original[0]} needs shorter wording and a new recording")
         timing[original[0]] = (original, adjusted)
     first, last = window or (0, target[-1][2])
@@ -1148,8 +1149,9 @@ def subtitle_export(root, query, master_entries=None):
         text = row.get("text")
         if identifier not in timing or not isinstance(text, str) or not text.strip():
             continue
-        (_, source_start, _), (_, start, _) = timing[identifier]
-        left, right = [start + round(entry[field] * series.FPS) - source_start
+        (_, source_start, source_end), (_, start, end) = timing[identifier]
+        scale = min(1, (end - start) / (source_end - source_start)) if fit_dubs else 1
+        left, right = [start + round((round(entry[field] * series.FPS) - source_start) * scale)
                        for field in ("start", "end")]
         begin = round((max(left, first) - first) * ms_per_frame)
         finish = round((min(right, last) - first) * ms_per_frame)
@@ -1695,7 +1697,7 @@ def job_command(payload):
         raise ValueError("Expected a JSON object")
     allowed = {"path", "command", "languages", "youtube", "resolution", "aspect", "dry_run", "master_language",
                "chapter", "cue_start", "cue_end", "mix", "music", "ambience", "sound_map", "resume",
-               "require_complete", "mux_dubs", "sidecars", "tinyaudio"}
+               "require_complete", "mux_dubs", "sidecars", "tinyaudio", "stable_audio", "fit_dubs", "master_audio_sidecar"}
     if unknown := payload.keys() - allowed:
         raise ValueError(f"Unknown fields: {', '.join(sorted(unknown))}")
     root = project_root(payload.get("path"))
@@ -1706,11 +1708,20 @@ def job_command(payload):
     youtube = payload.get("youtube", False)
     mux_dubs = payload.get("mux_dubs", False)
     sidecars = payload.get("sidecars", youtube and not mux_dubs)
+    fit_dubs = payload.get("fit_dubs", False)
+    master_audio_sidecar = payload.get("master_audio_sidecar", True)
+    if type(fit_dubs) is not bool or (fit_dubs and not youtube):
+        raise ValueError("fit_dubs must be boolean and requires a YouTube build")
+    if type(master_audio_sidecar) is not bool:
+        raise ValueError("master_audio_sidecar must be boolean")
     dry_run = payload.get("dry_run", False)
     require_complete = payload.get("require_complete", False)
     mix = payload.get("mix", False)
     sound_map = payload.get("sound_map", False)
     tinyaudio = payload.get("tinyaudio")
+    stable_audio_enabled = payload.get("stable_audio", False)
+    if not isinstance(stable_audio_enabled, bool) or (stable_audio_enabled and tinyaudio is not None):
+        raise ValueError("stable_audio must be boolean; choose one scene audio generator")
     resume = payload.get("resume", command == "build")
     languages = payload.get("languages", [])
     if command not in ("scan", "build"):
@@ -1733,8 +1744,8 @@ def job_command(payload):
     audio_fields = {key: payload[key] for key in ("music", "ambience") if key in payload}
     if tinyaudio is not None and tinyaudio != "scenes":
         raise ValueError("TinyAudio поддерживает автоматическую генерацию звуков по сценам.")
-    if (mix and command != "build") or ((audio_fields or sound_map or tinyaudio) and not mix):
-        raise ValueError("mix requires build; music, ambience, sound_map and TinyAudio require mix")
+    if (mix and command != "build") or ((audio_fields or sound_map or tinyaudio or stable_audio_enabled) and not mix):
+        raise ValueError("mix requires build; music, ambience, sound_map and scene audio generators require mix")
     if mix:
         if not all(isinstance(value, str) for value in audio_fields.values()):
             raise ValueError("Music and ambience paths must be strings")
@@ -1766,7 +1777,7 @@ def job_command(payload):
     selected = languages or list(config["languages"])
     filename = "video-360p.mp4" if resolution == "360p" else "video.mp4"
     work = inside(series.mix_output(series.aspect_output(series.fragment_output(output, fragment), aspect),
-                                    mix, sound_map, tinyaudio))
+                                    mix, sound_map, tinyaudio, stable_audio_enabled))
     if youtube:
         source = config.get("source_language")
         master = payload.get("master_language", source)
@@ -1799,6 +1810,9 @@ def job_command(payload):
             arguments.extend(f"--{key}={value}" for key, value in audio_fields.items())
             if sound_map:
                 arguments.append("--sound-map")
+            if stable_audio_enabled:
+                arguments.extend(("--stable-audio", "--stable-audio-home",
+                                  str(WORKSPACE / "output" / ".stable-audio")))
             if tinyaudio:
                 arguments.append(f"--tinyaudio={tinyaudio}")
     if dry_run:
@@ -1807,6 +1821,8 @@ def job_command(payload):
         arguments.append("--youtube")
         if mux_dubs:
             arguments.append("--mux-dubs")
+        if fit_dubs:
+            arguments.append("--fit-dubs")
         if "master_language" in payload:
             arguments.extend(("--master-language", master))
     return arguments, outputs
@@ -1820,7 +1836,8 @@ def youtube_subtitles(payload):
     fragment = {key: [payload[key]] for key in ("chapter", "cue_start", "cue_end") if key in payload}
     master_entries = sync_timeline(root, master, config["languages"][master])
     return master, {
-        code: subtitle_export(root, {**fragment, "language": [code], "master_language": [master]}, master_entries)[2]
+        code: subtitle_export(root, {**fragment, "language": [code], "master_language": [master]}, master_entries,
+                              fit_dubs=payload.get("fit_dubs", False))[2]
         for code in dict.fromkeys([master, *languages])
     }
 
@@ -1829,24 +1846,25 @@ def extract_audio(source, target, frames):
     series.encode_export_audio(source, target, frames * (48000 // series.FPS))
 
 
-def write_youtube_sidecars(video, master, subtitles, registry=None):
+def write_youtube_sidecars(video, master, subtitles, registry=None, include_master_audio=True):
     directory = video.parent.parent
-    paths = [inside(directory / f"{master}.mp3"),
-             *(inside(directory / f"{code}.srt") for code in subtitles)]
-    names = [relative(video), relative(paths[0])]
-    if not registry or not any(registry.matches(record, names) for record in registry.recent(MAX_JOBS)):
+    paths = [inside(directory / f"{code}.srt") for code in subtitles]
+    master_audio = inside(directory / f"{master}.mp3") if include_master_audio else None
+    if master_audio is not None and (not registry or not any(
+        registry.matches(record, [relative(video), relative(master_audio)]) for record in registry.recent(MAX_JOBS)
+    )):
         frames = int(series.call("ffprobe", "-v", "error", "-select_streams", "v:0",
                                  "-show_entries", "stream=nb_frames", "-of", "csv=p=0", str(video)).strip())
-        with series.staged_artifact(paths[0]) as pending:
+        with series.staged_artifact(master_audio) as pending:
             extract_audio(video, pending, frames)
-            pending.replace(paths[0])
-    for path, body in zip(paths[1:], subtitles.values(), strict=True):
+            pending.replace(master_audio)
+    for path, body in zip(paths, subtitles.values(), strict=True):
         if path.is_file() and path.read_bytes() == body:
             continue
         with series.staged_artifact(path) as pending:
             pending.write_bytes(body)
             pending.replace(path)
-    return paths
+    return [master_audio, *paths] if master_audio is not None else paths
 
 
 def master_switch_inputs(payload, registry=None):
@@ -2334,7 +2352,8 @@ class Jobs:
                 if len(outputs) != len(candidates):
                     raise ValueError("The export did not produce all requested audio and video files")
                 for path in write_youtube_sidecars(candidates[0], master, subtitles,
-                                                   self.registry if payload.get("resume", True) else None):
+                                                   self.registry if payload.get("resume", True) else None,
+                                                   include_master_audio=payload.get("master_audio_sidecar", True)):
                     name = relative(path)
                     outputs.append({"path": name, "url": "/api/files?" + urlencode({"path": name})})
                 with self.lock:
@@ -2544,7 +2563,8 @@ class Handler(BaseHTTPRequestHandler):
                                                    "/api/project/montage", "/api/project/regions",
                                                    "/api/project/regions/preview", "/api/project/package",
                                                    "/api/project/quality", "/api/narration/tts/synthesize",
-                                                   "/api/exports/import", "/api/audio/tinyaudio", "/api/project/sync/adapt"}:
+                                                   "/api/exports/import", "/api/audio/tinyaudio", "/api/audio/stable-audio",
+                                                   "/api/project/sync/adapt"}:
                 if self.headers.get_content_type() != "application/json":
                     raise ApiError(415, "Send application/json")
                 length = int(self.headers.get("Content-Length", "0"))
@@ -2556,6 +2576,16 @@ class Handler(BaseHTTPRequestHandler):
                     self.json(200, import_export_report(payload, self.server.jobs))
                 elif url.path == "/api/project/sync/adapt":
                     self.json(200, dub_adaptation.apply(sys.modules[__name__], payload, self.server.jobs))
+                elif url.path == "/api/audio/stable-audio":
+                    if not TINYAUDIO_MANUAL_LOCK.acquire(blocking=False):
+                        raise ApiError(409, "Дождитесь завершения текущей генерации звука.")
+                    try:
+                        with tempfile.TemporaryDirectory() as work:
+                            output = Path(work) / "stable-audio.mp3"
+                            stable_audio.synthesize(WORKSPACE / "output" / ".stable-audio", payload, output)
+                            self.reply(200, output.read_bytes(), "audio/mpeg", output.name)
+                    finally:
+                        TINYAUDIO_MANUAL_LOCK.release()
                 elif url.path == "/api/audio/tinyaudio":
                     if not isinstance(payload, dict):
                         raise ValueError("Expected a JSON object")

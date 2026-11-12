@@ -12,6 +12,7 @@ from unittest.mock import patch
 from urllib.request import Request, urlopen
 
 import server
+import stable_audio
 import tts_bridge
 
 
@@ -35,6 +36,27 @@ class ExportTest(unittest.TestCase):
         self.root = self.workspace / "show"
         self.root.mkdir()
         write_json(self.root / "series.json", {"source_language": "en", "languages": {"en": {}, "ru": {}}})
+
+    def test_stable_audio_job_uses_the_configured_workspace(self):
+        write_json(self.root / "shots.json", [])
+        arguments, _ = server.job_command({
+            "path": "show", "languages": ["en"], "mix": True, "stable_audio": True, "dry_run": True,
+        })
+        index = arguments.index("--stable-audio-home")
+        self.assertEqual(Path(arguments[index + 1]), self.workspace / "output" / ".stable-audio")
+        self.assertIn("--dry-run", arguments)
+
+    def test_stable_audio_dry_run_merges_adjacent_cues_without_writing(self):
+        directory = self.root / "generated"
+        rows = [{"cue": "A", "start": 0, "end": 2}, {"cue": "B", "start": 2, "end": 4}]
+        cue = lambda row: row["cue"]
+        prompts = {("A", "small-sfx"): "Rain on leaves", ("B", "small-sfx"): "Rain on leaves"}
+        with patch.object(stable_audio, "synthesize") as synthesize:
+            plan = stable_audio.export_tracks(self.workspace, directory, prompts, rows, cue, 25, (25, 75), True)
+            synthesize.assert_not_called()
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0][1:], (0, 50, 25))
+        self.assertFalse(directory.exists())
 
     def test_receipt_after_restart_and_replacement(self):
         jobs = server.Jobs()

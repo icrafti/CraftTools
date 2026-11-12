@@ -184,12 +184,20 @@
             <ul id="readiness-issues" class="small"></ul>
           </details>
           <details id="tinyaudio-manual">
-            <summary>Генератор звуков TinyAudio</summary>
+            <summary>Генератор звука</summary>
+            <label for="sound-generator">Модель</label>
+            <select id="sound-generator">
+              <option value="small-sfx">Stable Audio 3 · звуковые эффекты</option>
+              <option value="small-music">Stable Audio 3 · музыка</option>
+              <option value="tinyaudio">TinyAudio</option>
+            </select>
+            <label for="sound-duration" id="sound-duration-label">Длительность, сек.</label>
+            <input id="sound-duration" type="number" min="1" max="30" step="1" value="5">
             <label for="tinyaudio-description">Описание звука</label>
             <textarea id="tinyaudio-description" rows="3" maxlength="1000"
               placeholder="Например, тяжёлая дверь скрипит и захлопывается в пустом коридоре"
               aria-describedby="tinyaudio-manual-hint"></textarea>
-            <p class="small hint" id="tinyaudio-manual-hint">Локальная генерация короткого звука, около 10 секунд.</p>
+            <p class="small hint" id="tinyaudio-manual-hint">Опишите нужный звук на английском. TinyAudio генерирует клипы около 10 секунд.</p>
             <button type="button" id="tinyaudio-generate" disabled>Сгенерировать звук</button>
             <p class="small feedback" id="tinyaudio-message" role="status"></p>
             <div id="tinyaudio-result" hidden>
@@ -305,6 +313,16 @@
               </label>
             </div>
           </fieldset>
+          <details id="scene-review-3d">
+            <summary>Обязательная проверка каждой 3D-сцены</summary>
+            <p class="small">Перед сдачей просмотрите каждый план актуального рендера целиком в движении. Покадрово проверьте контакты и крайние позы.</p>
+            <ul class="small">
+              <li>Ищите пересечения персонажей, одежды, предметов и декора. Проверьте опору ног, захваты руками и вход камеры в геометрию.</li>
+              <li>На склейках одной проходки сверьте скорость, направление и фазу шага. Свяжите каждую остановку с действием в сцене.</li>
+              <li>Запишите результат по каждому плану. Для дефекта укажите таймкод, объекты и результат повторной проверки.</li>
+              <li>После исправления пересмотрите затронутые планы и их стыки. Моушн-дизайнер проверяет геометрию, продюсер сверяет охват.</li>
+            </ul>
+          </details>
           <label for="export-scope">Что экспортировать</label>
           <select id="export-scope">
             <option value="">Весь проект</option>
@@ -348,7 +366,8 @@
               <button type="button" id="sound-map-check">Показать звуковую карту</button>
               <p class="small feedback" id="sound-map-message" role="status"></p>
               <ul id="sound-map-segments" hidden></ul>
-              <label><input type="checkbox" id="tinyaudio-scenes"> Генерировать звуки по сценам (TinyAudio)</label>
+              <label for="tinyaudio-scenes">Генерация звука по сценам</label>
+              <select id="tinyaudio-scenes"><option value="">Выключена</option><option value="stable-audio">Stable Audio 3 · эффекты и музыка</option><option value="tinyaudio">TinyAudio · эффекты</option></select>
             </div>
           </details>
           <details id="montage-editor" hidden>
@@ -449,6 +468,7 @@
           </details>
           <details id="continuity" hidden>
             <summary>Согласованность кадров</summary>
+            <p class="small">До генерации отметьте первое появление каждого героя, границы воспоминаний и момент раскрытия сюжетных деталей. После монтажа включите предпросмотр с основной озвучкой и пройдите все кадры до последней реплики. Сверьте действие, участников, место, время и реквизит с тем, что звучит и что зритель уже знает. После каждой замены проверьте кадр и соседние склейки.</p>
             <button type="button" id="continuity-check">Проверить разметку</button>
             <p class="small feedback" id="continuity-message" role="status"></p>
             <div id="continuity-issues"></div>
@@ -1980,7 +2000,7 @@
           byId("mix-music").value = "";
           byId("mix-ambience").value = "";
           byId("mix-sound-map").checked = false;
-          byId("tinyaudio-scenes").checked = false;
+          byId("tinyaudio-scenes").value = "";
           updateMixFields();
         }
         for (const [id, values] of [["export-chapter", project.chapters], ["cue-start", project.cues], ["cue-end", project.cues]]) {
@@ -2287,6 +2307,8 @@
     const tinyaudioDownload = byId("tinyaudio-download");
     const tinyaudioResult = byId("tinyaudio-result");
     const tinyaudioMessage = byId("tinyaudio-message");
+    const soundGenerator = byId("sound-generator");
+    const soundDuration = byId("sound-duration");
     let tinyaudioRunning = false;
 
     function updateTinyAudioButton() {
@@ -2294,15 +2316,27 @@
     }
 
     tinyaudioDescription.addEventListener("input", updateTinyAudioButton);
+    soundGenerator.addEventListener("change", () => {
+      const fixedDuration = soundGenerator.value === "tinyaudio";
+      soundDuration.hidden = fixedDuration;
+      byId("sound-duration-label").hidden = fixedDuration;
+    });
     tinyaudioButton.addEventListener("click", async () => {
       const prompt = tinyaudioDescription.value.trim();
       if (!prompt || tinyaudioRunning) return;
+      const model = soundGenerator.value;
+      const tiny = model === "tinyaudio";
+      if (!tiny && (!soundDuration.value || !soundDuration.checkValidity())) {
+        soundDuration.reportValidity();
+        return;
+      }
       tinyaudioRunning = true;
       updateTinyAudioButton();
       message(tinyaudioMessage, "Генерируем звук на этом компьютере…");
       try {
-        const response = await fetch("/api/audio/tinyaudio", {
-          method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({prompt})
+        const response = await fetch(tiny ? "/api/audio/tinyaudio" : "/api/audio/stable-audio", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(tiny ? {prompt} : {prompt, model, duration: soundDuration.valueAsNumber})
         });
         if (!response.ok) {
           const data = await response.json().catch(() => ({}));
@@ -2312,6 +2346,7 @@
         if (tinyaudioPlayer.src.startsWith("blob:")) URL.revokeObjectURL(tinyaudioPlayer.src);
         tinyaudioPlayer.src = url;
         tinyaudioDownload.href = url;
+        tinyaudioDownload.download = tiny ? "tinyaudio.mp3" : `${model}.mp3`;
         tinyaudioResult.hidden = false;
         message(tinyaudioMessage, "Звук готов.");
       } catch (error) {
@@ -2725,7 +2760,8 @@
           const ambience = byId("mix-ambience").value.trim();
           if (music) request.music = music;
           if (ambience) request.ambience = ambience;
-          if (byId("tinyaudio-scenes").checked) request.tinyaudio = "scenes";
+          if (byId("tinyaudio-scenes").value === "tinyaudio") request.tinyaudio = "scenes";
+          if (byId("tinyaudio-scenes").value === "stable-audio") request.stable_audio = true;
         }
       }
       return request;

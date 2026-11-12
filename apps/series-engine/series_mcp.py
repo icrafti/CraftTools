@@ -1,4 +1,4 @@
-"""Expose local Series Engine dubbing tools over MCP stdio."""
+"""Expose local Series Engine tools and production prompts over MCP stdio."""
 
 import argparse
 import json
@@ -28,6 +28,21 @@ def make_server(port: int) -> FastMCP:
     def agent_guide() -> str:
         """Current Series Engine workflow and maintenance instructions."""
         return guide.read_text(encoding="utf-8")
+
+    @server.prompt()
+    def plan_scene_audio(path: str) -> str:
+        """Prepare English Stable Audio 3 prompts for a project's storyboard."""
+        return f"Prepare scene audio for {path}.\n\n" + guide.read_text(encoding="utf-8").split(
+            "## Stable Audio 3 по сценам", 1
+        )[1].split("\n## ", 1)[0]
+
+    @server.prompt()
+    def review_3d_scenes(path: str, render: str) -> str:
+        """Review each shot for clipping, foot contact and motion continuity across cuts."""
+        checklist = guide.read_text(encoding="utf-8").split(
+            "## Приёмка 3D-сцен", 1
+        )[1].split("\n## ", 1)[0].strip()
+        return f"Проект: {path}\nРендер: {render}\n\n{checklist}"
 
     def call(endpoint, *, query=None, payload=None, timeout=120):
         address = f"http://127.0.0.1:{port}{endpoint}"
@@ -76,6 +91,26 @@ def make_server(port: int) -> FastMCP:
             "path": path, "master_language": master_language, "language": language,
             "revision": revision, "provider": "microsoft", "changes": changes,
         })
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False))
+    def build_scene_audio(
+        path: str,
+        language: str,
+        cue_start: str,
+        cue_end: str,
+        resolution: str = "360p",
+        dry_run: bool = True,
+    ) -> dict:
+        """Queue a fragment with Stable Audio 3. Set dry_run=False to generate sound and render."""
+        return call("/api/jobs", payload={
+            "path": path, "languages": [language], "cue_start": cue_start, "cue_end": cue_end,
+            "resolution": resolution, "mix": True, "stable_audio": True, "dry_run": dry_run,
+        })
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
+    def check_build(job_id: Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]) -> dict:
+        """Read status, log and output paths of an engine job."""
+        return call(f"/api/jobs/{job_id}")
 
     return server
 

@@ -149,11 +149,11 @@ def render_location_bed(output, frames, fps, segments):
 
 
 def mix_audio(voice, output, frames, fps, music=None, ambience=None, offset_frames=0, *,
-              location_bed=None, effects_bed=None):
+              location_bed=None, effects_bed=None, generated_music_bed=None, bed_gain_db=0):
     """Write stereo PCM at the specified video duration, preserving the bed offset."""
     if frames <= 0 or offset_frames < 0 or fps <= 0 or SAMPLE_RATE % fps:
         raise ValueError("Invalid frame boundaries for the audio mix")
-    inputs = (voice, music, ambience, location_bed, effects_bed)
+    inputs = (voice, music, ambience, location_bed, effects_bed, generated_music_bed)
     if output.resolve() in {path.resolve() for path in inputs if path is not None}:
         raise ValueError("Audio mix output must differ from the input tracks")
     samples_per_frame = SAMPLE_RATE // fps
@@ -166,7 +166,7 @@ def mix_audio(voice, output, frames, fps, music=None, ambience=None, offset_fram
     beds = [(path, level, loop) for path, level, loop in (
         (music, MUSIC_DB, True), (ambience, AMBIENCE_DB, True),
         (location_bed, AMBIENCE_DB, False),
-        (effects_bed, -18, False),
+        (effects_bed, -18, False), (generated_music_bed, MUSIC_DB, False),
     ) if path is not None]
     graph = [f"[0:a]{audio_format},{trim},volume={gain:.6f}dB[voice]"]
     for index, (path, level, loop) in enumerate(beds, 1):
@@ -176,7 +176,7 @@ def mix_audio(voice, output, frames, fps, music=None, ambience=None, offset_fram
         arguments.extend(["-i", str(path)])
         begin = offset if loop else 0
         graph.append(f"[{index}:a]{audio_format},atrim=start_sample={begin}:end_sample={begin + length},"
-                     f"asetpts=PTS-STARTPTS,volume={level}dB[bed{index}]")
+                     f"asetpts=PTS-STARTPTS,volume={level + bed_gain_db}dB[bed{index}]")
     if beds:
         tracks = "".join(f"[bed{index}]" for index in range(1, len(beds) + 1))
         if len(beds) > 1:

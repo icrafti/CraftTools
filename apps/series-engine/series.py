@@ -17,6 +17,7 @@ from pathlib import Path
 
 from audio_mix import mix_audio, render_location_bed, validate_bed
 import tinyaudio_bridge
+import stable_audio
 from checkpoints import cached_stage, commit, current, signature as checkpoint_key
 import build_history
 import quality
@@ -237,10 +238,12 @@ def aspect_output(output, aspect):
     return output / "vertical" if aspect == "9:16" else output
 
 
-def mix_output(output, enabled, sound_map=False, tinyaudio=None):
+def mix_output(output, enabled, sound_map=False, tinyaudio=None, stable_audio_enabled=False):
     if not enabled:
         return output
     output = output / "mixed" / "mapped" if sound_map else output / "mixed"
+    if stable_audio_enabled:
+        return output / "stable-audio"
     return output / f"tinyaudio-{tinyaudio}" if tinyaudio else output
 
 
@@ -305,15 +308,18 @@ def sound_map_plan(entries, mapping, window=None):
 
 def render_mix(voice, output, duration, mix, offset, plan, work=None):
     beds = {}
-    for is_effect, field in ((False, "location_bed"), (True, "effects_bed")):
+    for field in ("location_bed", "effects_bed", "generated_music_bed"):
         segments = [(start, end, location["audio"], offset_frames)
                     for location, start, end, offset_frames in plan or ()
-                    if location.get("generated_effect", False) == is_effect]
+                    if field == ("generated_music_bed" if location.get("generated_music") else
+                                 "effects_bed" if location.get("generated_effect") else "location_bed")]
         if segments:
             target = (work or output.parent) / f"{field}.wav"
             render_location_bed(target, duration, FPS, segments)
             beds[field] = target
-    mix_audio(voice, output, duration, FPS, *mix, offset_frames=offset, **beds)
+    bed_gain = next((location['bed_gain_db'] for location, *_ in plan or ()
+                     if 'bed_gain_db' in location), 0)
+    mix_audio(voice, output, duration, FPS, *mix, offset_frames=offset, bed_gain_db=bed_gain, **beds)
 
 
 def slice_timeline(entries, fragment):
@@ -780,15 +786,22 @@ def block_overrun(source, target):
     return max(0, (source[2] - source[1]) - (target[2] - target[1]))
 
 
-def dub_block_filter(start, end, length):
+def dub_block_filter(start, end, length, fit=False):
+    tempo = []
     if end - start > length:
-        raise ValueError("Narration exceeds its master window")
-    return (f"atrim=start_sample={start}:end_sample={end},asetpts=PTS-STARTPTS,"
-            f"apad=whole_len={length},atrim=end_sample={length}")
+        if not fit:
+            raise ValueError("Narration exceeds its master window")
+        ratio = (end - start) / length
+        while ratio > 2:
+            tempo.append("atempo=2")
+            ratio /= 2
+        tempo.append(f"atempo={ratio:.12f}")
+    return ",".join([f"atrim=start_sample={start}:end_sample={end}", "asetpts=PTS-STARTPTS",
+                     *tempo, f"apad=whole_len={length}", f"atrim=end_sample={length}"])
 
 
 def youtube_dub(lang, master, entries, audio, destination, dry_run, window=None, mix=None, plan=None,
-                cache_version=None):
+                cache_version=None, fit=False):
     source = blocks(entries)
     source_end = source[-1][2]
     master, source = sync_blocks(master, source, window)
@@ -808,21 +821,21 @@ def youtube_dub(lang, master, entries, audio, destination, dry_run, window=None,
     filters = []
     overruns = [(original[0], frames) for original, target in zip(source, master)
                 if (frames := block_overrun(original, target))]
-    if overruns:
+    if overruns and not fit:
         examples = ", ".join(f"{identifier} (+{frames / FPS:.2f}s)" for identifier, frames in overruns[:8])
         raise ValueError(f"{len(overruns)} dubbing blocks need shorter wording and new recordings: {examples}")
     for index, (original, target) in enumerate(zip(source, master)):
         _, start, end = original
         _, target_start, target_end = target
         length = (target_end - target_start) * samples_per_frame
-        block_filter = dub_block_filter(start*samples_per_frame, end*samples_per_frame, length)
+        block_filter = dub_block_filter(start*samples_per_frame, end*samples_per_frame, length, fit)
         filters.append(f"[s{index}]{block_filter}[d{index}]")
     duration = duration_frames / FPS
-    print(f"{lang}: {len(source)} blocks at natural tempo, {duration:.2f}s")
+    print(f"{lang}: {len(source)} blocks, {len(overruns)} shortened by tempo adjustment, {duration:.2f}s")
     if dry_run:
         return
     target = destination / f"{lang}.mp3"
-    key = checkpoint_key(cache_version, audio, source, master, window, mix, plan) if cache_version else None
+    key = checkpoint_key(cache_version, audio, source, master, window, mix, plan, fit) if cache_version else None
     if key and current(target, key):
         reuse_output(target)
         return target
@@ -912,6 +925,11 @@ def main():
     parser.add_argument("--music", help="Looping background music inside the project")
     parser.add_argument("--ambience", help="Looping background ambience inside the project")
     parser.add_argument("--sound-map", action="store_true", help="Use project sound-map.json in the mix")
+    parser.add_argument("--fit-dubs", action="store_true", help="Speed up dubs exceeding their master windows")
+    parser.add_argument("--stable-audio", action="store_true", help="Generate storyboard audio with Stable Audio 3")
+    parser.add_argument("--stable-audio-home", type=Path,
+                        default=Path(__file__).resolve().parents[1] / "output" / ".stable-audio",
+                        help="Stable Audio 3 installation with runtime and models directories")
     parser.add_argument("--tinyaudio", choices=("scenes",), help="Generate local scene effects")
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=None,
                         help="Reuse verified checkpoints (on by default for build)")
@@ -924,14 +942,16 @@ def main():
     args.transient_pcm = False
     if args.youtube and args.command != "build":
         parser.error("--youtube requires build")
-    if args.mux_dubs and not args.youtube:
-        parser.error("--mux-dubs requires --youtube")
+    if (args.mux_dubs or args.fit_dubs) and not args.youtube:
+        parser.error("--mux-dubs and --fit-dubs require --youtube")
     if args.master_language and not args.youtube:
         parser.error("--master-language requires --youtube")
     if args.aspect == "9:16" and args.command != "build":
         parser.error("--aspect 9:16 requires build")
+    if args.stable_audio and args.tinyaudio:
+        parser.error("Choose one scene audio generator")
     if (args.mix and args.command != "build") or (
-        (args.music or args.ambience or args.sound_map or args.tinyaudio) and not args.mix
+        (args.music or args.ambience or args.sound_map or args.tinyaudio or args.stable_audio) and not args.mix
     ):
         parser.error("--mix requires build; background audio requires --mix")
     root = args.series.resolve()
@@ -949,6 +969,7 @@ def main():
     try:
         prompts = ({cue(row): tinyaudio_bridge.scene_prompt(row) for row in storyboard_rows}
                    if args.tinyaudio else {})
+        stable_prompts = stable_audio.scene_prompts(storyboard_rows, cue) if args.stable_audio else {}
         fragment = select_fragment(storyboard_rows, args.chapter, args.cue_start, args.cue_end)
         if fragment and args.command != "build":
             raise ValueError("Fragment selection requires build")
@@ -981,7 +1002,7 @@ def main():
     glossary = {key(k): v for k, v in config.get("glossary", {}).items()}
     ocr = read(cache) if cache.is_file() else {}
     montage = read_montage(root / "montage.json")
-    out = mix_output(aspect_output(fragment_output(out, fragment), args.aspect), args.mix, args.sound_map, args.tinyaudio)
+    out = mix_output(aspect_output(fragment_output(out, fragment), args.aspect), args.mix, args.sound_map, args.tinyaudio, args.stable_audio)
     failures = []
     languages = args.language or list(config["languages"])
     if args.youtube:
@@ -1022,7 +1043,7 @@ def main():
                     entries, audio = narration(root, lang, settings, args, stack)
                 if args.youtube and lang != master_lang:
                     target = youtube_dub(lang, master, entries, audio, out, args.dry_run, master_window, mix,
-                                         master_plan, args.cache_versions.get("dub"))
+                                         master_plan, args.cache_versions.get("dub"), args.fit_dubs)
                     if capture:
                         if args.mux_dubs:
                             localized_video = mux_dub(master_video, target, lang, args.cache_versions.get("mux"))
@@ -1057,6 +1078,19 @@ def main():
                             directory, prompts, full_entries, cue, FPS, window, args.dry_run
                         )
                         plan = [*(plan or ()), *effects]
+                    if args.stable_audio:
+                        directory = (out / ".stable-audio").resolve()
+                        if not directory.is_relative_to(out.resolve()) or not directory.is_relative_to(root):
+                            raise ValueError("Stable Audio assets must be inside the project output")
+                        generated = stable_audio.export_tracks(
+                            args.stable_audio_home, directory, stable_prompts, full_entries, cue, FPS, window, args.dry_run
+                        )
+                        gain = config.get("stable_audio_gain_db", 0)
+                        if type(gain) not in (int, float) or not -12 <= gain <= 12:
+                            raise ValueError("stable_audio_gain_db must be between -12 and 12")
+                        for location, *_ in generated:
+                            location["bed_gain_db"] = gain
+                        plan = [*(plan or ()), *generated]
                     if args.youtube:
                         master_plan = plan
                     if mix is not None and not args.dry_run:
@@ -1094,7 +1128,7 @@ def main():
                                          {"resolution": args.resolution, "aspect": args.aspect,
                                           "master_language": master_lang if args.youtube else None,
                                           "fragment": fragment, "mix": args.mix, "sound_map": args.sound_map,
-                                          "tinyaudio": args.tinyaudio,
+                                          "tinyaudio": args.tinyaudio, "stable_audio": args.stable_audio,
                                           "mux_dubs": args.mux_dubs,
                                           "quality": args.quality}, history, artifacts)
         print(f"Build snapshot: {snapshot['id']}")
